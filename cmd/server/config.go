@@ -492,9 +492,15 @@ func SaveGeoFilter(configDir string, gf *GeoFilterConfig) error {
 	}
 	out = append(out, '\n')
 
+	// Preserve the original file mode so operators' chmod 0600 survives the write.
+	origMode := os.FileMode(0644)
+	if fi, err := os.Stat(configPath); err == nil {
+		origMode = fi.Mode().Perm()
+	}
+
 	// Atomic write: temp file + rename.
 	tmp := configPath + ".tmp"
-	if err := os.WriteFile(tmp, out, 0644); err != nil {
+	if err := os.WriteFile(tmp, out, origMode); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	if err := os.Rename(tmp, configPath); err != nil {
