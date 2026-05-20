@@ -36,6 +36,10 @@ type Server struct {
 	// Guards s.cfg.GeoFilter — read by ingest/handler goroutines, written by PUT handler
 	cfgMu sync.RWMutex
 
+	// Serializes concurrent PUT /api/config/geo-filter disk writes so requests
+	// can't race on the .tmp file or interleave disk/memory updates.
+	saveMu sync.Mutex
+
 	// Cached runtime.MemStats to avoid stop-the-world pauses on every health check
 	memStatsMu   sync.Mutex
 	memStatsCache runtime.MemStats
@@ -513,15 +517,17 @@ func (s *Server) handlePutConfigGeoFilter(w http.ResponseWriter, r *http.Request
 		gf = &GeoFilterConfig{Polygon: body.Polygon, BufferKm: body.BufferKm}
 	}
 
+	s.saveMu.Lock()
 	if s.configDir != "" {
 		if err := SaveGeoFilter(s.configDir, gf); err != nil {
+			s.saveMu.Unlock()
 			log.Printf("[geofilter] save failed: %v", err)
 			writeError(w, http.StatusInternalServerError, "failed to save config")
 			return
 		}
 	}
-
 	s.setGeoFilter(gf)
+	s.saveMu.Unlock()
 
 	if gf != nil {
 		writeJSON(w, map[string]interface{}{"polygon": gf.Polygon, "bufferKm": gf.BufferKm})

@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -4175,6 +4177,46 @@ func TestPutConfigGeoFilter(t *testing.T) {
 			t.Fatalf("expected 400 for excessive bufferKm, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+}
+
+func TestPutConfigGeoFilter_ConcurrentSafe(t *testing.T) {
+	const apiKey = "a-strong-api-key-for-testing"
+	srv, router, dir := setupGeoFilterServer(t, apiKey)
+	_ = srv
+
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make(chan string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			lat := 51.0 + float64(i)*0.001
+			body := fmt.Sprintf(`{"polygon":[[%f,4.0],[%f,5.0],[50.5,4.0]],"bufferKm":0}`, lat, lat)
+			req := httptest.NewRequest("PUT", "/api/config/geo-filter", strings.NewReader(body))
+			req.Header.Set("X-API-Key", apiKey)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != 200 {
+				errs <- fmt.Sprintf("goroutine %d: got %d: %s", i, w.Code, w.Body.String())
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
+	// config.json must be valid JSON after concurrent writes
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v interface{}
+	if err := json.Unmarshal(data, &v); err != nil {
+		t.Errorf("config.json corrupted after concurrent PUTs: %v\ncontents: %s", err, data)
+	}
 }
 
 func TestSaveGeoFilter(t *testing.T) {
