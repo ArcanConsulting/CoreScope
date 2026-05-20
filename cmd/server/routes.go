@@ -501,6 +501,13 @@ func (s *Server) handlePutConfigGeoFilter(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	// bufferKm must be finite, non-negative, and ≤ 20000 km (half Earth circumference).
+	if math.IsNaN(body.BufferKm) || math.IsInf(body.BufferKm, 0) ||
+		body.BufferKm < 0 || body.BufferKm > 20000 {
+		writeError(w, http.StatusBadRequest, "bufferKm must be a finite number in [0, 20000]")
+		return
+	}
+
 	var gf *GeoFilterConfig
 	if len(body.Polygon) >= 3 {
 		gf = &GeoFilterConfig{Polygon: body.Polygon, BufferKm: body.BufferKm}

@@ -4149,6 +4149,32 @@ func TestPutConfigGeoFilter(t *testing.T) {
 			t.Fatalf("expected 401, got %d", w.Code)
 		}
 	})
+
+	t.Run("rejects negative bufferKm", func(t *testing.T) {
+		_, router, _ := setupGeoFilterServer(t, apiKey)
+		body := `{"polygon":[[51.0,4.0],[51.0,5.0],[50.5,4.0]],"bufferKm":-1}`
+		req := httptest.NewRequest("PUT", "/api/config/geo-filter", strings.NewReader(body))
+		req.Header.Set("X-API-Key", apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for negative bufferKm, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("rejects excessive bufferKm", func(t *testing.T) {
+		_, router, _ := setupGeoFilterServer(t, apiKey)
+		body := `{"polygon":[[51.0,4.0],[51.0,5.0],[50.5,4.0]],"bufferKm":99999999}`
+		req := httptest.NewRequest("PUT", "/api/config/geo-filter", strings.NewReader(body))
+		req.Header.Set("X-API-Key", apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for excessive bufferKm, got %d: %s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestSaveGeoFilter(t *testing.T) {
