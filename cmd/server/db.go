@@ -2478,23 +2478,3 @@ func (db *DB) GetNodesForGeoPrune() ([]NodeForGeoPrune, error) {
 // (opened with mode=ro after #1283/#1289), so DELETE statements would fail at
 // runtime. Geo-prune now flows server → marker file → ingestor; see
 // internal/prunequeue and cmd/ingestor/prune_geofilter.go.
-//
-// NOTE — this commit (RED) temporarily restores the method so the invariant
-// test in cmd/server/readonly_invariant_test.go fails on it. The next commit
-// (GREEN) removes the method and migrates the write path to the ingestor.
-func (db *DB) DeleteNodesByPubkeys(pubkeys []string) (int64, error) {
-	if len(pubkeys) == 0 {
-		return 0, nil
-	}
-	placeholders := strings.Repeat("?,", len(pubkeys))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]interface{}, len(pubkeys))
-	for i, pk := range pubkeys {
-		args[i] = pk
-	}
-	result, err := db.conn.Exec("DELETE FROM nodes WHERE public_key IN ("+placeholders+")", args...)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}

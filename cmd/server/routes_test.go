@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/meshcore-analyzer/prunequeue"
 )
 
 func setupTestServer(t *testing.T) (*Server, *mux.Router) {
@@ -4261,7 +4262,7 @@ func TestPruneGeoFilterEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("confirm=true deletes outside nodes", func(t *testing.T) {
+	t.Run("confirm=true enqueues a prune request (status 202)", func(t *testing.T) {
 		srv, router := setupPruneGeoFilterServer(t, apiKey, gf)
 
 		body := strings.NewReader(`{"pubkeys":["aaaa111122223333"]}`)
@@ -4271,33 +4272,117 @@ func TestPruneGeoFilterEndpoint(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 
-		if w.Code != 200 {
-			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
 		}
 		var resp map[string]interface{}
 		json.Unmarshal(w.Body.Bytes(), &resp)
 		if resp["dryRun"] != false {
 			t.Error("expected dryRun=false")
 		}
-		deleted, _ := resp["deleted"].(float64)
-		if deleted != 1 {
-			t.Errorf("expected 1 deleted, got %v", deleted)
+		if resp["accepted"] != true {
+			t.Error("expected accepted=true")
 		}
-		nodes, _ := resp["nodes"].([]interface{})
-		if len(nodes) != 1 {
-			t.Errorf("expected 1 node in response, got %d", len(nodes))
+		id, _ := resp["requestId"].(string)
+		if id == "" {
+			t.Fatal("expected non-empty requestId")
+		}
+		count, _ := resp["count"].(float64)
+		if count != 1 {
+			t.Errorf("expected count=1, got %v", count)
 		}
 
-		// Verify node is actually gone from DB
-		var count int
-		srv.db.conn.QueryRow("SELECT COUNT(*) FROM nodes WHERE public_key = 'aaaa111122223333'").Scan(&count)
-		if count != 0 {
-			t.Error("expected OutsideNode to be deleted from DB")
+		// Server is read-only — node must STILL exist in DB. The ingestor
+		// is responsible for the actual DELETE; the server only enqueued.
+		var dbCount int
+		srv.db.conn.QueryRow("SELECT COUNT(*) FROM nodes WHERE public_key = 'aaaa111122223333'").Scan(&dbCount)
+		if dbCount != 1 {
+			t.Errorf("expected OutsideNode still present (server is read-only), got count=%d", dbCount)
 		}
-		// No-GPS node must still exist
-		srv.db.conn.QueryRow("SELECT COUNT(*) FROM nodes WHERE public_key = 'bbbb111122223333'").Scan(&count)
-		if count != 1 {
-			t.Error("expected NoGPSNode to be kept")
+
+		// And the marker file must exist on disk.
+		pending, err := prunequeue.RequestExists(srv.db.path, id)
+		if err != nil {
+			t.Fatalf("RequestExists: %v", err)
+		}
+		if !pending {
+			t.Errorf("expected request-%s.json to exist in queue dir", id)
+		}
+	})
+
+	t.Run("status endpoint reports pending then surfaces ingestor result", func(t *testing.T) {
+		srv, router := setupPruneGeoFilterServer(t, apiKey, gf)
+
+		// Enqueue first.
+		body := strings.NewReader(`{"pubkeys":["aaaa111122223333"]}`)
+		req := httptest.NewRequest("POST", "/api/admin/prune-geo-filter?confirm=true", body)
+		req.Header.Set("X-API-Key", apiKey)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		var resp map[string]interface{}
+		json.Unmarshal(w.Body.Bytes(), &resp)
+		id := resp["requestId"].(string)
+
+		// While pending: GET status returns 200 status=pending.
+		statusReq := httptest.NewRequest("GET", "/api/admin/prune-geo-filter/status?id="+id, nil)
+		statusReq.Header.Set("X-API-Key", apiKey)
+		statusW := httptest.NewRecorder()
+		router.ServeHTTP(statusW, statusReq)
+		if statusW.Code != 200 {
+			t.Fatalf("status pending: expected 200, got %d: %s", statusW.Code, statusW.Body.String())
+		}
+		var sresp map[string]interface{}
+		json.Unmarshal(statusW.Body.Bytes(), &sresp)
+		if sresp["status"] != "pending" {
+			t.Errorf("expected status=pending, got %v", sresp["status"])
+		}
+
+		// Simulate the ingestor completing the request.
+		if err := prunequeue.WriteResult(srv.db.path, prunequeue.Result{
+			ID:          id,
+			RequestedAt: time.Now().Add(-1 * time.Second).UTC(),
+			CompletedAt: time.Now().UTC(),
+			Deleted:     1,
+		}); err != nil {
+			t.Fatalf("WriteResult: %v", err)
+		}
+
+		// Now status should report done.
+		statusW2 := httptest.NewRecorder()
+		router.ServeHTTP(statusW2, statusReq)
+		if statusW2.Code != 200 {
+			t.Fatalf("status done: expected 200, got %d", statusW2.Code)
+		}
+		var sresp2 map[string]interface{}
+		json.Unmarshal(statusW2.Body.Bytes(), &sresp2)
+		if sresp2["status"] != "done" {
+			t.Errorf("expected status=done, got %v", sresp2["status"])
+		}
+		if d, _ := sresp2["deleted"].(float64); d != 1 {
+			t.Errorf("expected deleted=1, got %v", sresp2["deleted"])
+		}
+	})
+
+	t.Run("status endpoint returns 404 for unknown id", func(t *testing.T) {
+		_, router := setupPruneGeoFilterServer(t, apiKey, gf)
+		req := httptest.NewRequest("GET", "/api/admin/prune-geo-filter/status?id=deadbeefdeadbeef", nil)
+		req.Header.Set("X-API-Key", apiKey)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404, got %d", w.Code)
+		}
+	})
+
+	t.Run("status endpoint rejects path-traversal-looking id", func(t *testing.T) {
+		_, router := setupPruneGeoFilterServer(t, apiKey, gf)
+		req := httptest.NewRequest("GET", "/api/admin/prune-geo-filter/status?id=../../etc/passwd", nil)
+		req.Header.Set("X-API-Key", apiKey)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", w.Code)
 		}
 	})
 
@@ -4359,31 +4444,7 @@ func TestGetNodesForGeoPrune(t *testing.T) {
 	}
 }
 
-func TestDeleteNodesByPubkeys(t *testing.T) {
-	db := setupTestDB(t)
-	seedTestData(t, db)
+// TestDeleteNodesByPubkeys was removed in PR #738 follow-up: the DELETE has
+// been relocated to the ingestor (cmd/ingestor/prune_geofilter.go). End-to-end
+// coverage of the prune flow now lives in cmd/ingestor/*_test.go.
 
-	// Count before
-	var before int
-	db.conn.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&before)
-	if before == 0 {
-		t.Skip("no nodes to delete")
-	}
-
-	// Delete one node
-	var pk string
-	db.conn.QueryRow("SELECT public_key FROM nodes LIMIT 1").Scan(&pk)
-	n, err := db.DeleteNodesByPubkeys([]string{pk})
-	if err != nil {
-		t.Fatalf("DeleteNodesByPubkeys: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("expected 1 deleted, got %d", n)
-	}
-
-	var after int
-	db.conn.QueryRow("SELECT COUNT(*) FROM nodes").Scan(&after)
-	if after != before-1 {
-		t.Errorf("expected %d nodes after delete, got %d", before-1, after)
-	}
-}
