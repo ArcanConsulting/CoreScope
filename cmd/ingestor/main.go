@@ -364,11 +364,31 @@ func buildMQTTOpts(source MQTTSource) *mqtt.ClientOptions {
 	if tag == "" {
 		tag = source.Broker
 	}
+	// #1337: paho defaults silently throttle delivery on this broker.
+	//  - CleanSession=true + empty ClientID (random per reconnect) made the
+	//    broker treat every reconnect as a brand-new session and discard the
+	//    backlog it had queued since the previous disconnect. With watchdog
+	//    reconnects every ~5min on staging, this lost ~99% of messages.
+	//  - Order=true serialized the default publish handler; one slow packet
+	//    blocked all others, compounding the loss under bursts.
+	// Fix: persistent unique ClientID + CleanSession=false (broker keeps
+	// our subscription state across reconnects and forwards what we missed),
+	// explicit KeepAlive so half-open TCP is detected at the paho layer, and
+	// Order=false for parallel handler dispatch.
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "unknown-host"
+	}
+	clientID := "corescope-ingestor-" + hostname + "-" + tag
+
 	opts := mqtt.NewClientOptions().
 		AddBroker(source.Broker).
+		SetClientID(clientID).
+		SetCleanSession(false).
+		SetKeepAlive(30 * time.Second).
+		SetOrderMatters(false).
 		SetAutoReconnect(true).
 		SetConnectRetry(true).
-		SetOrderMatters(true).
 		SetMaxReconnectInterval(30 * time.Second).
 		SetConnectTimeout(10 * time.Second).
 		SetWriteTimeout(10 * time.Second)
