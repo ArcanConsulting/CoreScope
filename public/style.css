@@ -1633,8 +1633,12 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
 
 /* === Responsive — Tablet (≤900px) === */
 @media (max-width: 900px) {
+  /* nav-stats hidden in the (min-width:768) and (max-width:1100) band
+     below — see #1343. Keeping the rule here too is harmless but
+     misleading: it implies 900px is the breakpoint when in reality
+     the JS applyNavPriority assumes (and the 1100px block enforces)
+     the hide-band extends up to 1100px. */
   .panel-right { width: 320px; min-width: 320px; }
-  .nav-stats { display: none; }
   .brand-logo { height: 32px; width: 112px; }
   .nav-link { padding: 14px 8px; font-size: 13px; }
   .map-controls { width: 180px; font-size: 12px; }
@@ -1701,6 +1705,7 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
    above so its tighter padding/gap rules win the cascade by source
    order at 1024px (same specificity). */
 @media (min-width: 768px) and (max-width: 1100px) {
+  .nav-stats { display: none; }
   .nav-links { gap: 0; }
   .nav-link { padding: 14px 6px; }
   .nav-link.active { padding: 10px 6px; }
