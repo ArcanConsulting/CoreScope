@@ -76,6 +76,53 @@ modified migration blocks (files matching `cmd/ingestor/db.go`,
 `CREATE UNIQUE INDEX`). For each hit it requires one of the three
 opt-outs above. Hard-fail (exit 1) — no warning-only mode.
 
+## Concurrency model
+
+CoreScope runs **one ingestor process** per deployment (`cmd/ingestor/`,
+single binary, single `*Store`). There is no cluster mode, no leader
+election, no second writer. SQLite is opened with `SetMaxOpenConns(1)`
+and a 5s `busy_timeout`; all writes (live MQTT ingest + async migration
+goroutines + maintenance backfills) serialize through the one connection
+in a single process.
+
+What this means for async migrations:
+
+- **No cross-process race** to worry about. Two ingestor instances
+  running against the same DB is not a supported deployment shape.
+- **Within a single process**, concurrent `RunAsyncMigration(name=X)`
+  callers race the initial `SELECT status` → `UPDATE/INSERT` step. The
+  current implementation re-schedules `fn` on a pending/failed row so a
+  duplicate caller may legitimately re-run it; once status is `done` all
+  further calls short-circuit. See
+  `TestRunAsyncMigration_ConcurrentSameNameSerialized` for the contract.
+- **`fn` runs concurrently with live ingest writers.** Because
+  `MaxOpenConns=1`, a long `CREATE INDEX` will serialize behind / ahead
+  of insert batches via SQLite's busy-timeout. This is acceptable for
+  index builds (the boot path is unblocked, which was the whole point),
+  but it means long migrations DO add latency to live writes. Document
+  expected runtime in the `reason=` annotation and prefer batched/chunked
+  fn implementations for multi-minute work (see `BackfillPathJSONAsync`
+  for the canonical batched pattern with inter-batch `time.Sleep`).
+
+## Scale budgets
+
+Per-migration target: **<30s** at current prod scale (Cascadia: ~2,600
+nodes, ~80K observations; previous prod snapshot: ~1.9M observations).
+
+Worked example (#1483, `obs_observer_ts_idx_v1`): composite index build
+on `observations(observer_idx, timestamp)`. At ~1.9M rows the sync build
+pinned ingestor boot for several minutes → restart loop. Converted to
+async via `RunAsyncMigration` in `OpenStore` so boot returns immediately
+and the index materializes in the background; the existing `_migrations`
+short-circuit at the top of the migration block ensures DBs that already
+completed the sync v3.8.3 build do NOT re-run it through the goroutine
+path on subsequent boots.
+
+If you cannot meet the <30s budget, document the expected upper bound
+and operator runbook expectation (e.g. "index build expected ~10 min on
+a 5M-row table; ingestor remains responsive; monitor via
+`SELECT status, error FROM _async_migrations WHERE name = ...`").
+
 ## Why this exists
 
 Pattern that keeps repeating:
