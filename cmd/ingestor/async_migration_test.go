@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,12 +46,29 @@ func TestRunAsyncMigration_PendingThenDone(t *testing.T) {
 	release := make(chan struct{})
 
 	const name = "test_async_migration_v1"
-	if err := s.RunAsyncMigration(ctx, name, func(ctx context.Context, db *sql.DB) error {
-		close(started)
-		<-release
-		return nil
-	}); err != nil {
-		t.Fatalf("RunAsyncMigration returned error: %v", err)
+	// Wrap the call in a goroutine + select so that a SYNCHRONOUS
+	// implementation (one that blocks on fn before returning) would
+	// deadlock or hang — proving non-blocking behaviour rather than
+	// just "fn started concurrently". A sync impl would never deliver
+	// to resultCh because fn blocks on `<-release` which we haven't
+	// closed yet.
+	resultCh := make(chan error, 1)
+	go func() {
+		resultCh <- s.RunAsyncMigration(ctx, name, func(ctx context.Context, db *sql.DB) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("RunAsyncMigration returned error: %v", err)
+		}
+		// Returned successfully without blocking — that's the contract.
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunAsyncMigration did not return within 2s — implementation appears to block on fn (sync regression)")
 	}
 
 	// Wait for the goroutine to actually start before checking status; this
@@ -59,7 +77,7 @@ func TestRunAsyncMigration_PendingThenDone(t *testing.T) {
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
-		t.Fatal("async migration fn did not start within 2s — RunAsyncMigration may have blocked or never scheduled")
+		t.Fatal("async migration fn did not start within 2s — RunAsyncMigration may never have scheduled")
 	}
 
 	status, err := s.AsyncMigrationStatus(name)
@@ -251,49 +269,206 @@ func TestRunAsyncMigration_FnErrorRecorded(t *testing.T) {
 	}
 }
 
-// TestRunAsyncMigration_ConcurrentSameNameSerialized validates the
-// single-process-instance assumption: ingestor has only one *Store, and
-// concurrent RunAsyncMigration(name=X) calls on the SAME *Store must not
-// execute fn more than once for a given name. (CoreScope does not support
-// multi-ingestor / cluster mode — see MIGRATIONS.md "Concurrency" note —
-// so cross-process races are out of scope.)
-func TestRunAsyncMigration_ConcurrentSameNameSerialized(t *testing.T) {
+// TestRunAsyncMigration_SameNameConcurrent_FnRunsOnce validates the
+// single-process concurrency invariant: many goroutines calling
+// RunAsyncMigration(name=X) at the same instant must NEVER execute fn more
+// than once, AND every caller must receive a nil error (none should hit
+// the "UNIQUE constraint failed" race that the previous SELECT-then-INSERT
+// implementation was vulnerable to).
+//
+// The fix relies on:
+//   - atomic INSERT ... ON CONFLICT DO UPDATE RETURNING (no SELECT-then-INSERT TOCTOU)
+//   - sync.Map in-process guard (no double-launch on shared pending_async)
+//
+// Previously named TestRunAsyncMigration_ConcurrentSameNameSerialized; the
+// old test was tautological (it asserted calls ∈ [1..5], satisfiable by
+// any broken impl).
+func TestRunAsyncMigration_SameNameConcurrent_FnRunsOnce(t *testing.T) {
 	s := newTestStore(t)
 	const name = "test_concurrent_serialize_v1"
+	const callers = 5
 
 	var calls int32
 	fn := func(ctx context.Context, db *sql.DB) error {
 		atomic.AddInt32(&calls, 1)
-		time.Sleep(20 * time.Millisecond)
+		// Hold long enough to guarantee all other goroutines have
+		// observed the in-flight state and exited their RunAsyncMigration
+		// returns. Without this the in-process guard cleanup could race
+		// with late entrants.
+		time.Sleep(50 * time.Millisecond)
 		return nil
 	}
 
+	// Start-barrier so all goroutines wake at the same instant — maximizes
+	// the chance of triggering any latent race.
+	start := make(chan struct{})
+	errs := make(chan error, callers)
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
+	for i := 0; i < callers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			// All concurrent callers use the SAME name. Each is allowed
-			// to either no-op (status==done short-circuit) or schedule
-			// a re-run; the invariant is "fn never runs more than once
-			// concurrently and on second-call-after-done it does not
-			// re-execute."
-			_ = s.RunAsyncMigration(context.Background(), name, fn)
+			<-start
+			errs <- s.RunAsyncMigration(context.Background(), name, fn)
 		}()
 	}
+	close(start)
 	wg.Wait()
+	close(errs)
+
+	// Capture errors — every caller MUST get nil. Old impl was prone to
+	// "UNIQUE constraint failed: _async_migrations.name" on the loser of
+	// the SELECT-then-INSERT race.
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("RunAsyncMigration returned error from concurrent caller: %v", err)
+		}
+	}
+
 	s.WaitForAsyncMigrations()
 	waitForStatus(t, s, name, "done", 2*time.Second)
 
-	// The contract per the helper's docstring + Idempotent test is: once
-	// status is `done`, subsequent calls short-circuit. Concurrent calls
-	// that lose the race to set up the pending_async row may legitimately
-	// re-schedule fn (the comment "previous run may have crashed
-	// mid-flight" justifies retry on pending_async). The hard bound is
-	// "fn runs at most ONCE PER pending->done transition" — for this
-	// test we assert fn ran at least once and at most a small bounded
-	// number (5 callers, each may have scheduled before any reached done).
-	if got := atomic.LoadInt32(&calls); got < 1 || got > 5 {
-		t.Fatalf("fn invoked %d times, want 1..5 inclusive (bounded by caller count)", got)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("fn invoked %d times, want exactly 1 (concurrent same-name calls must serialize to one execution)", got)
+	}
+}
+
+// TestRunAsyncMigration_NilDBReturnsError ensures that calling
+// RunAsyncMigration on a *Store with a nil db handle returns a clear
+// sentinel error rather than panicking. This is a programmer-error guard:
+// the helper is concurrency-critical and a nil-deref panic would crash
+// the ingestor in a confusing way.
+func TestRunAsyncMigration_NilDBReturnsError(t *testing.T) {
+	var s Store // zero value, db is nil
+	err := s.RunAsyncMigration(context.Background(), "nil_db_test",
+		func(ctx context.Context, db *sql.DB) error { return nil })
+	if err == nil {
+		t.Fatal("RunAsyncMigration on nil db: got nil error, want ErrNilStoreDB")
+	}
+	if err != ErrNilStoreDB {
+		t.Fatalf("RunAsyncMigration on nil db: got %v, want ErrNilStoreDB", err)
+	}
+
+	// Same for AsyncMigrationStatus — must not panic.
+	if _, err := s.AsyncMigrationStatus("nil_db_test"); err != ErrNilStoreDB {
+		t.Fatalf("AsyncMigrationStatus on nil db: got %v, want ErrNilStoreDB", err)
+	}
+}
+
+// TestRunAsyncMigration_CtxCancelRecorded verifies that when ctx is
+// cancelled and fn returns ctx.Err(), the migration is recorded as
+// `failed` with "context canceled" in the error column. This is the
+// graceful-shutdown contract: a cancelled migration should NOT be marked
+// done (it didn't finish), but the failure mode must be observable.
+func TestRunAsyncMigration_CtxCancelRecorded(t *testing.T) {
+	s := newTestStore(t)
+	const name = "test_ctx_cancel_v1"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+
+	if err := s.RunAsyncMigration(ctx, name, func(ctx context.Context, db *sql.DB) error {
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	}); err != nil {
+		t.Fatalf("RunAsyncMigration: %v", err)
+	}
+
+	<-started
+	cancel()
+	s.WaitForAsyncMigrations()
+
+	status, err := s.AsyncMigrationStatus(name)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("status after ctx cancel: got %q, want failed", status)
+	}
+
+	var errCol sql.NullString
+	if err := s.db.QueryRow(`SELECT error FROM _async_migrations WHERE name = ?`, name).Scan(&errCol); err != nil {
+		t.Fatalf("error col: %v", err)
+	}
+	if !errCol.Valid || !strings.Contains(errCol.String, "context canceled") {
+		t.Fatalf("error column should contain %q, got %q", "context canceled", errCol.String)
+	}
+}
+
+// TestRunAsyncMigration_CrossProcessSerialized verifies the cross-process
+// concurrency claim made in MIGRATIONS.md: two distinct *sql.DB handles
+// (simulating two ingestor instances) opened against the same file,
+// concurrently calling RunAsyncMigration(name=X), must NEVER execute fn
+// more than once total. SQLite serializes writes via its file-level lock,
+// and the atomic INSERT ON CONFLICT pattern means the loser sees the
+// winner's `pending_async` row and short-circuits.
+//
+// NOTE: the in-process sync.Map guard does NOT cross processes; the
+// cross-process safety comes solely from SQLite's write serialization +
+// the atomic ON CONFLICT. This test pins that property.
+func TestRunAsyncMigration_CrossProcessSerialized(t *testing.T) {
+	// Two stores against the same DB file simulate two processes.
+	dir := t.TempDir()
+	dbPath := dir + "/cross.db"
+
+	s1, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open s1: %v", err)
+	}
+	defer s1.Close()
+
+	s2, err := OpenStore(dbPath)
+	if err != nil {
+		t.Fatalf("open s2: %v", err)
+	}
+	defer s2.Close()
+
+	// Sanity: distinct *sql.DB handles.
+	if s1.db == s2.db {
+		t.Fatal("expected distinct *sql.DB handles")
+	}
+
+	const name = "test_cross_process_v1"
+	var calls int32
+	fn := func(ctx context.Context, db *sql.DB) error {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := s1.RunAsyncMigration(context.Background(), name, fn); err != nil {
+			t.Errorf("s1.RunAsyncMigration: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := s2.RunAsyncMigration(context.Background(), name, fn); err != nil {
+			t.Errorf("s2.RunAsyncMigration: %v", err)
+		}
+	}()
+	close(start)
+	wg.Wait()
+
+	s1.WaitForAsyncMigrations()
+	s2.WaitForAsyncMigrations()
+
+	// Both stores should agree status==done; SQLite write serialization
+	// guarantees the second INSERT sees the first's row.
+	st1, _ := s1.AsyncMigrationStatus(name)
+	st2, _ := s2.AsyncMigrationStatus(name)
+	if st1 != "done" || st2 != "done" {
+		t.Fatalf("expected done/done, got s1=%q s2=%q", st1, st2)
+	}
+
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("fn invoked %d times across two processes, want exactly 1 (SQLite write serialization + ON CONFLICT must dedupe)", got)
 	}
 }
