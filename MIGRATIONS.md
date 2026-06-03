@@ -87,22 +87,48 @@ in a single process.
 
 What this means for async migrations:
 
-- **No cross-process race** to worry about. Two ingestor instances
-  running against the same DB is not a supported deployment shape.
 - **Within a single process**, concurrent `RunAsyncMigration(name=X)`
-  callers race the initial `SELECT status` → `UPDATE/INSERT` step. The
-  current implementation re-schedules `fn` on a pending/failed row so a
-  duplicate caller may legitimately re-run it; once status is `done` all
-  further calls short-circuit. See
-  `TestRunAsyncMigration_ConcurrentSameNameSerialized` for the contract.
-- **`fn` runs concurrently with live ingest writers.** Because
-  `MaxOpenConns=1`, a long `CREATE INDEX` will serialize behind / ahead
-  of insert batches via SQLite's busy-timeout. This is acceptable for
-  index builds (the boot path is unblocked, which was the whole point),
-  but it means long migrations DO add latency to live writes. Document
-  expected runtime in the `reason=` annotation and prefer batched/chunked
-  fn implementations for multi-minute work (see `BackfillPathJSONAsync`
-  for the canonical batched pattern with inter-batch `time.Sleep`).
+  callers are deduplicated by two layers:
+  1. An atomic `INSERT ... ON CONFLICT(name) DO UPDATE ... RETURNING`
+     replaces the previous SELECT-then-INSERT pattern, eliminating the
+     TOCTOU race where two callers both saw `ErrNoRows` and the loser
+     hit `UNIQUE constraint failed`.
+  2. An in-process `sync.Map` guard tracks which names currently have a
+     goroutine executing `fn` IN THIS PROCESS. A second caller that
+     sees `pending_async` (e.g. because the first caller just inserted
+     it) short-circuits via the in-flight map and does NOT launch a
+     duplicate goroutine.
+  See `TestRunAsyncMigration_SameNameConcurrent_FnRunsOnce` for the
+  contract: 5 concurrent callers ⇒ fn runs exactly once, all 5 return
+  `nil`.
+- **Across processes** (two ingestor instances against the same DB —
+  not a supported deployment shape, but verified for defense-in-depth):
+  SQLite's file-level write lock serializes the atomic INSERT. The
+  losing process's `ON CONFLICT` sees the winner's `pending_async` row
+  and short-circuits. The in-process `sync.Map` does NOT cross
+  processes, so this property comes solely from SQLite's write
+  serialization. See `TestRunAsyncMigration_CrossProcessSerialized` for
+  the pinned contract.
+- **Terminal status durability.** The final `UPDATE` that flips the row
+  to `done` / `failed` is retried with backoff (3 attempts, 100ms /
+  500ms / 2s) to survive transient write contention. If all retries
+  fail, a `[async-migration] CRITICAL: cannot record terminal status…`
+  line is logged so the stuck row is visible in ops aggregation —
+  otherwise the migration would silently re-run on every subsequent
+  boot.
+- **WARNING: `fn` blocks ALL live ingest writes for its duration.**
+  Because `MaxOpenConns=1`, a long `CREATE INDEX` / `UPDATE` /
+  backfill inside `fn` holds the only write connection until it
+  yields. Estimate impact before approving any migration that takes
+  >5 seconds at production scale. For multi-minute work the canonical
+  pattern is chunked / batched fn implementations with inter-batch
+  `time.Sleep` so live writers can interleave (see
+  `BackfillPathJSONAsync` for a reference implementation).
+- **`fn` may run more than once across boots.** Crashed-mid-fn rows
+  are reset to `pending_async` and retried on next boot. `fn` MUST be
+  idempotent (`CREATE INDEX IF NOT EXISTS`, `INSERT ... ON CONFLICT DO
+  NOTHING`, etc.). See `RunAsyncMigration` godoc for the full caller
+  contract.
 
 ## Scale budgets
 
