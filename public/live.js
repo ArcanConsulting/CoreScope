@@ -215,6 +215,14 @@
     var nextIdx = (CORNER_CYCLE.indexOf(current) + 1) % 4;
     var next = nextAvailableCorner(panelId, CORNER_CYCLE[nextIdx], positions);
     try { localStorage.setItem('panel-corner-' + panelId, next); } catch (_) { /* quota */ }
+    // #1567: corner button must clear any prior free-form drag state, or
+    // the inline top/left from drag-manager.js wins the cascade over the
+    // corner anchors and the panel silently no-ops on click.
+    // #1568 round-1 MAJOR 2: shared cleaner — keeps Escape revert,
+    // responsive gate, corner-click, and reset paths in sync.
+    if (window.DragManager && DragManager.clearPanel) {
+      DragManager.clearPanel(document.getElementById(panelId), panelId);
+    }
     applyPanelPosition(panelId, next);
     // Announce for screen readers
     var announce = document.getElementById('panelPositionAnnounce');
@@ -224,6 +232,11 @@
   function resetPanelPositions() {
     for (var id in PANEL_DEFAULTS) {
       try { localStorage.removeItem('panel-corner-' + id); } catch (_) { /* ignore */ }
+      // #1568 round-1 MAJOR 1: clear drag state before applying defaults,
+      // otherwise a dragged panel's inline coords win the cascade.
+      if (window.DragManager && DragManager.clearPanel) {
+        DragManager.clearPanel(document.getElementById(id), id);
+      }
       applyPanelPosition(id, PANEL_DEFAULTS[id]);
     }
   }
@@ -326,6 +339,12 @@
     function publish() {
       var h = Math.ceil(bar.getBoundingClientRect().height) || 58;
       page.style.setProperty('--vcr-bar-height', h + 'px');
+      // #1568 round-2: also publish on :root so JS reading
+      // getComputedStyle(document.documentElement).getPropertyValue(
+      // '--vcr-bar-height') sees the measured value (E2E assertions,
+      // future global consumers). CSS resolution unchanged — the
+      // .live-page-scoped var still wins for live-overlay rules.
+      try { document.documentElement.style.setProperty('--vcr-bar-height', h + 'px'); } catch (_) {}
     }
     publish();
     var ro = null;
@@ -1941,14 +1960,12 @@
       var dragMql = window.matchMedia('(pointer: fine) and (min-width: 768px)');
       function onDragMediaChange(e) {
         if (!e.matches) {
-          // Revert dragged panels to corner positions
+          // Revert dragged panels to corner positions. Preserve the
+          // localStorage drag key so widening the viewport restores
+          // the dragged position via dragMgr.restorePositions().
+          // #1568 round-1 MAJOR 2: shared cleaner with clearStorage:false.
           document.querySelectorAll('.live-overlay[data-dragged="true"]').forEach(function (p) {
-            delete p.dataset.dragged;
-            p.style.transform = '';
-            p.style.top = '';
-            p.style.left = '';
-            p.style.right = '';
-            p.style.bottom = '';
+            DragManager.clearPanel(p, p.id, { clearStorage: false });
           });
           initPanelPositions();
           dragMgr.disable();
