@@ -2577,9 +2577,9 @@
       // "Show all nodes" is enabled. Empty string when no region set.
       const rqs = (window.RegionFilter && typeof RegionFilter.nodesRegionQueryString === 'function')
         ? RegionFilter.nodesRegionQueryString() : '';
-      const url = beforeTs
-        ? `/api/nodes?limit=${window.LIVE_MAP_MAX_NODES}&before=${encodeURIComponent(new Date(beforeTs).toISOString())}${aqs}${rqs}`
-        : `/api/nodes?limit=${window.LIVE_MAP_MAX_NODES}${aqs}${rqs}`;
+      const beforeQs = beforeTs
+        ? `&before=${encodeURIComponent(new Date(beforeTs).toISOString())}`
+        : '';
       // Full reload (no beforeTs): clear existing markers so switching areas
       // removes nodes that no longer belong to the selected area.
       if (!beforeTs) {
@@ -2587,9 +2587,13 @@
         nodeMarkers = {};
         nodeData = {};
       }
-      const resp = await fetch(url);
-      const nodes = await resp.json();
-      const list = Array.isArray(nodes) ? nodes : (nodes.nodes || []);
+      // Paginate past the server's per-request node cap (listLimits.nodesMax)
+      // so the live map isn't truncated to the top-N by advert. LIVE_MAP_MAX_NODES
+      // is passed as safetyCap, which fetchAllNodes enforces as a hard ceiling on
+      // returned nodes — so the live map never renders more than the configured max.
+      const { nodes: list } = await fetchAllNodes(`${beforeQs}${aqs}${rqs}`, {
+        safetyCap: window.LIVE_MAP_MAX_NODES || 10000,
+      });
       var now = Date.now();
       list.forEach(n => {
         if (n.lat != null && n.lon != null && !(n.lat === 0 && n.lon === 0)) {

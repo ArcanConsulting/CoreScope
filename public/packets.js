@@ -903,7 +903,7 @@
     if (!HopResolver.ready()) {
       try {
         const [nodeData, obsData, coordData] = await Promise.all([
-          api('/nodes?limit=2000', { ttl: 60000 }),
+          fetchAllNodes('', { ttl: 60000 }),
           api('/observers', { ttl: 60000 }),
           api('/iata-coords', { ttl: 300000 }).catch(() => ({ coords: {} })),
         ]);
@@ -911,7 +911,11 @@
           observers: obsData.observers || obsData || [],
           iataCoords: coordData.coords || {},
         });
-      } catch {}
+      } catch (e) {
+        // Non-fatal: hops will render as unresolved hex prefixes until a later
+        // call succeeds. Log so a paginated /api/nodes failure isn't silent.
+        console.warn('[packets] HopResolver init failed:', e);
+      }
     }
   }
 

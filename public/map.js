@@ -1216,7 +1216,10 @@
       try { REGION_NAMES = await api('/config/regions', { ttl: 3600 }); } catch {}
 
       const aqs = AreaFilter.areaQueryString();
-      const data = await api(`/nodes?limit=10000&lastHeard=${filters.lastHeard}${aqs}`, { ttl: CLIENT_TTL.nodeList });
+      // Paginate past the server's per-request node cap (listLimits.nodesMax)
+      // so actively-relaying repeaters that last advertised hours ago still
+      // appear instead of being truncated by the top-N window. See fetchAllNodes.
+      const data = await fetchAllNodes(`&lastHeard=${filters.lastHeard}${aqs}`, { ttl: CLIENT_TTL.nodeList });
       nodes = data.nodes || [];
 
       // Load observers for jump buttons + map markers
