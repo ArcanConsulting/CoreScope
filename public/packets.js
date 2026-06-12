@@ -963,7 +963,14 @@
 
   function renderPath(hops, observerId) {
     if (!hops || !hops.length) return '—';
-    return hops.map(h => renderHop(h, observerId)).join('<span class="arrow">→</span>');
+    // #1633 — render-time filter (default OFF). Applies at every consumer
+    // because every site funnels through this function (group header, child
+    // observation, packet detail dt/dd, byop overlay).
+    var filtered = (typeof window !== 'undefined' && window.MC_filterPathHops)
+      ? window.MC_filterPathHops(hops)
+      : hops;
+    if (!filtered.length) return '— <span class="text-muted" title="All path hops were 1-byte and are hidden by the customizer toggle">(1-byte filtered)</span>';
+    return filtered.map(h => renderHop(h, observerId)).join('<span class="arrow">→</span>');
   }
 
   let directPacketId = null;
@@ -1005,6 +1012,18 @@
 
   async function init(app, routeParam) {
     const gen = ++initGeneration;
+    // #1689 r1 (adv #4): subscribe to the customizer hide-1-byte-hops toggle
+    // so the packets table re-renders LIVE when operators flip it (the
+    // toggle promised "applies everywhere" — without a listener it only
+    // took effect on next navigation, which the inline comment lied about).
+    // The listener is idempotent via a flag on `window` so re-entering the
+    // route doesn't stack handlers.
+    if (typeof window !== 'undefined' && !window.__mc_packets_hide1byte_wired) {
+      window.__mc_packets_hide1byte_wired = true;
+      window.addEventListener('mc-hide-1byte-hops-changed', function () {
+        try { renderTableRows(); } catch (e) { console.warn('[packets] hide-1byte re-render failed', e); }
+      });
+    }
     // Parse ?obs=OBSERVER_ID from routeParam
     if (routeParam && routeParam.includes('?')) {
       const qIdx = routeParam.indexOf('?');

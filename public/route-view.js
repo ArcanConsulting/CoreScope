@@ -324,7 +324,21 @@
     var contextBlock = buildPacketContextBlock(pktCtx);
     var uniquePathsCount = (opts && opts.allPaths) ? (function () {
       var seen = {};
-      opts.allPaths.forEach(function (p) { seen[(p.path || []).join('-')] = true; });
+      opts.allPaths.forEach(function (p) {
+        // #1633 — collapse paths whose only difference is 1-byte hops when
+        // the customizer toggle is ON. Aggregation uses the FILTERED hop
+        // list so the picker count reflects the surviving distinct routes.
+        // #1689 r1 (adv #1): if the filter strips EVERY hop the key becomes
+        // an empty string and distinct all-1-byte routes collide into one
+        // bucket. Fall back to the raw key with an `__all1byte__::` prefix
+        // so they stay distinct while still being marked as filtered.
+        var rawHops = (p.path || []);
+        var hops = (typeof window !== 'undefined' && window.MC_filterPathHops)
+          ? window.MC_filterPathHops(rawHops)
+          : rawHops;
+        var key = hops.length ? hops.join('-') : ('__all1byte__::' + rawHops.join('-'));
+        seen[key] = true;
+      });
       return Object.keys(seen).length;
     })() : 1;
     var multiPathChip = '';
@@ -338,8 +352,16 @@
       // paths, each with the observer-count and a click-to-isolate affordance.
       var pathGroups = {};
       (opts.allPaths || []).forEach(function (p) {
-        var k = (p.path || []).join('→');
-        if (!pathGroups[k]) pathGroups[k] = { key: k, observers: [], count: 0 };
+        var rawHops = p.path || [];
+        // #1633 — same render-time filter as the count above.
+        // #1689 r1 (adv #1): empty filtered result must NOT collide with
+        // other all-1-byte paths. Use a sentinel that includes the rawHops
+        // signature so distinct routes stay separate buckets in the picker.
+        var hops = (typeof window !== 'undefined' && window.MC_filterPathHops)
+          ? window.MC_filterPathHops(rawHops)
+          : rawHops;
+        var k = hops.length ? hops.join('→') : ('⟨all-1byte⟩::' + rawHops.join('→'));
+        if (!pathGroups[k]) pathGroups[k] = { key: k, observers: [], count: 0, allOneByte: hops.length === 0 && rawHops.length > 0, rawHops: rawHops };
         pathGroups[k].observers.push(p.observer || '?');
         pathGroups[k].count++;
       });
@@ -347,10 +369,20 @@
       var pickerRows = groupList.map(function (g, idx) {
         var sample = g.observers[0];
         var moreSuffix = g.observers.length > 1 ? ' +' + (g.observers.length - 1) : '';
-        var hops = g.key.split('→').filter(function(s){return s.length>0;});
-        return '<li class="mc-rt-path-row" data-path-key="' + escapeHtml(g.key) + '" data-obs-count="' + g.count + '" tabindex="0" role="button" aria-label="Isolate path with ' + hops.length + ' hops, seen by ' + g.count + ' of ' + totalObservers + ' observers">' +
+        // #1689 r1 (kb #2): all-1-byte path → show a labeled chip instead of
+        // an empty hop row so operators see WHY the route appears collapsed.
+        var hopsHtml, hopsCount;
+        if (g.allOneByte) {
+          hopsCount = (g.rawHops || []).length;
+          hopsHtml = '<span class="text-muted">— (' + hopsCount + ' × 1-byte filtered)</span>';
+        } else {
+          var hops = g.key.split('→').filter(function(s){return s.length>0;});
+          hopsCount = hops.length;
+          hopsHtml = hops.map(escapeHtml).join(' → ');
+        }
+        return '<li class="mc-rt-path-row" data-path-key="' + escapeHtml(g.key) + '" data-obs-count="' + g.count + '" tabindex="0" role="button" aria-label="Isolate path with ' + hopsCount + ' hops, seen by ' + g.count + ' of ' + totalObservers + ' observers">' +
           '<span class="mc-rt-path-count">' + g.count + '/' + totalObservers + '</span>' +
-          '<span class="mc-rt-path-hops">' + hops.map(escapeHtml).join(' → ') + '</span>' +
+          '<span class="mc-rt-path-hops">' + hopsHtml + '</span>' +
           '<span class="mc-rt-path-obs" title="' + escapeHtml(g.observers.join(', ')) + '">' + escapeHtml(sample) + moreSuffix + '</span>' +
         '</li>';
       }).join('');
