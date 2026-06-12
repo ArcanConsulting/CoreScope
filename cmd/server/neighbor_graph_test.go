@@ -834,3 +834,63 @@ func BenchmarkBuildFromStore(b *testing.B) {
 		BuildFromStore(store)
 	}
 }
+
+// TestBuildNeighborGraph_CountsByMode (issue #1638): verify per-hash-mode
+// edge counts are tracked separately from the flat Count, so the frontend
+// confidence indicator can weight 3-byte (effectively unambiguous) sightings
+// higher than 1-byte (high-collision) sightings. Modes track firmware-valid
+// hash sizes 1/2/3 per Packet.cpp:13-18.
+func TestBuildNeighborGraph_CountsByMode(t *testing.T) {
+	// Use a unique-bbbb-prefix R1 so 1/2/3-byte prefixes all resolve to it.
+	nodes := []nodeInfo{
+		{Role: "repeater", PublicKey: "aaaa1111", Name: "NodeX"},
+		{Role: "repeater", PublicKey: "bbbb2222", Name: "NodeR1"},
+		{Role: "repeater", PublicKey: "cccc3333", Name: "Obs"},
+	}
+	// Three ADVERTs from X observed at varying hash modes hitting R1.
+	txs := []*StoreTx{
+		ngMakeTx(1, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
+			ngMakeObs("cccc3333", `["bb"]`, nowStr, nil), // 1-byte
+		}),
+		ngMakeTx(2, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
+			ngMakeObs("cccc3333", `["bbbb"]`, nowStr, nil), // 2-byte
+		}),
+		ngMakeTx(3, 4, ngFromNodeJSON("aaaa1111"), []*StoreObs{
+			ngMakeObs("cccc3333", `["bbbb22"]`, nowStr, nil), // 3-byte
+		}),
+	}
+	store := ngTestStore(nodes, txs)
+	g := BuildFromStore(store)
+
+	edges := g.Neighbors("aaaa1111")
+	var xr1 *NeighborEdge
+	for _, e := range edges {
+		other := e.NodeB
+		if e.NodeA != "aaaa1111" {
+			other = e.NodeA
+		}
+		if other == "bbbb2222" {
+			xr1 = e
+			break
+		}
+	}
+	if xr1 == nil {
+		t.Fatalf("expected X↔R1 edge, got %d edges", len(edges))
+	}
+	// Back-compat: flat Count == 3.
+	if xr1.Count != 3 {
+		t.Errorf("expected Count=3, got %d", xr1.Count)
+	}
+	if xr1.CountsByMode == nil {
+		t.Fatalf("expected CountsByMode populated, got nil")
+	}
+	if got := xr1.CountsByMode[1]; got != 1 {
+		t.Errorf("CountsByMode[1] = %d, want 1", got)
+	}
+	if got := xr1.CountsByMode[2]; got != 1 {
+		t.Errorf("CountsByMode[2] = %d, want 1", got)
+	}
+	if got := xr1.CountsByMode[3]; got != 1 {
+		t.Errorf("CountsByMode[3] = %d, want 1", got)
+	}
+}
