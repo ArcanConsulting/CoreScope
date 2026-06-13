@@ -223,6 +223,26 @@
      .nav-link.active background, .fGroup.active. */
   --accent-strong: var(--palette-blue-600);
   --text-on-accent: var(--palette-gray-50);
+  /* #1668 M5 — accessible link/text color. The legacy --accent (#4a9eff)
+     used for text-on-light backgrounds was 2.52:1 on white (BLOCKER per
+     M5 axe gate, 219 hits across .analytics-link / .sort-active / .ch-*).
+     Dark theme override below bumps to palette-blue-400 (#60a5fa) so
+     links stay readable on surface-0 (#0f0f23 ≈ 8.4:1, AA pass).
+     Use --link-color for any "text rendered ON the page surface that
+     should look like a link / interactive accent" — NOT for backgrounds.
+     Backgrounds carrying white text continue to use --accent-strong. */
+  /* #1668 M5 — accessible semantic status colors. The legacy fallbacks
+     baked into JS (var(--success, #22c55e)) used the bright palette-500
+     hues which fail AA against white surfaces (#22c55e/white = 2.27:1,
+     #ef4444/white = 3.76:1). New theme-aware tokens use palette-700 on
+     light surfaces (5.0-6.5:1 vs white) and palette-400/500 on dark
+     (6+:1 vs surface-0/1). All callers should now read --success /
+     --warning / --danger WITHOUT a hex fallback (kept as legacy support
+     only). */
+  --success: var(--palette-green-700, #15803d);
+  --warning: #b45309;
+  --danger: var(--palette-red-600, #dc2626);
+  --link-color: var(--palette-blue-600);
   --accent-bg: rgba(59, 130, 246, 0.12);
   --accent-border: rgba(59, 130, 246, 0.25);
   --geo-filter-color: #3b82f6;
@@ -344,6 +364,14 @@
     --status-amber-text: #fcd34d;
     --path-inspector-speculative: #f59e0b;
     --status-info: #60a5fa;
+    /* #1668 M5 — bump link text up two stops on dark surfaces (4a9eff
+       was OK but borderline on card-bg; #60a5fa = palette-blue-400 ≈
+       7.8:1 on surface-0, 5.4:1 on card-bg, AA pass either way). */
+    --link-color: var(--palette-blue-400);
+    /* #1668 M5 — bright -400/-500 hues for AA against dark surfaces */
+    --success: var(--palette-green-400, #4ade80);
+    --warning: #fcd34d;
+    --danger:  var(--palette-red-400, #f87171);
     --surface-0: #0f0f23;
     --surface-1: #1a1a2e;
     --surface-2: #232340;
@@ -387,6 +415,11 @@
   --status-amber-light: #422006;
   --status-amber-text: #fcd34d;
   --status-info: #60a5fa;
+  /* #1668 M5 — see :root[data-theme="dark"] media block above for rationale */
+  --link-color: var(--palette-blue-400);
+  --success: var(--palette-green-400, #4ade80);
+  --warning: #fcd34d;
+  --danger:  var(--palette-red-400, #f87171);
   --surface-0: #0f0f23;
   --surface-1: #1a1a2e;
   --surface-2: #232340;
@@ -799,7 +832,7 @@ img.brand-logo {
 .dropdown-item {
   display: block; padding: 8px 16px; color: var(--text-muted); text-decoration: none; font-size: 13px;
 }
-.dropdown-item:hover { background: var(--accent); color: #fff; }
+.dropdown-item:hover { background: var(--accent-strong); color: var(--text-on-accent); }
 
 .nav-right { display: flex; align-items: center; gap: var(--space-sm); flex-shrink: 0; }
 .nav-btn {
@@ -877,7 +910,7 @@ img.brand-logo {
   font-family: var(--mono); margin-right: 4px; white-space: nowrap;
 }
 .nav-stats .stat-val { color: var(--nav-text); font-weight: 600; transition: color 0.3s ease; }
-.nav-stats .stat-val.updated { color: var(--accent); }
+.nav-stats .stat-val.updated { color: var(--link-color); }
 
 /* === Layout === */
 /* Default: body-scroll mode — content pushes beyond viewport, iOS status-bar
@@ -1002,7 +1035,7 @@ img.brand-logo {
   position: sticky; top: 0; z-index: 1;
 }
 .data-table th.sortable { cursor: pointer; }
-.data-table th.sortable:hover { color: var(--accent); }
+.data-table th.sortable:hover { color: var(--link-color); }
 .data-table td {
   padding: 3px 6px; border-bottom: 1px solid var(--border);
   vertical-align: middle; white-space: nowrap;
@@ -1209,8 +1242,13 @@ img.brand-logo {
 .col-hidden-pill {
   display: inline-block; margin-left: 6px;
   padding: 1px 7px; border-radius: 999px;
-  background: var(--accent-bg, rgba(96,165,250,0.18));
-  color: var(--accent, #60a5fa);
+  /* #1668 M5 — was bg:--accent-bg (rgba blue tint) + color:--accent
+     = ~2.4:1 on light theme. Swap the tint for solid --accent-strong
+     (palette-blue-600 #2563eb) and use --text-on-accent (gray-50) so
+     the pill matches the M2 .skip-link / .filter-bar .btn.active
+     pattern: 4.83:1 AA both themes, no per-theme branching. */
+  background: var(--accent-strong);
+  color: var(--text-on-accent);
   font-size: 12px; font-weight: var(--fw-bold); letter-spacing: .3px; /* #1668 M3 — was 10px */
   cursor: pointer; user-select: none; vertical-align: middle;
   border: 1px solid var(--accent, #60a5fa);
@@ -1384,7 +1422,7 @@ body.scroll-locked { overflow: hidden; }
 .detail-meta dd { font-weight: 500; margin-bottom: 4px; }
 /* #1281: 📍map link inside detail-meta — UA-default blue is unreadable on EMOJI-OK-COMMENT
  * dark backgrounds. Force theme-aware color via --accent. */
-.loc-map-link { color: var(--accent); font-size: 0.85em; text-decoration: none; }
+.loc-map-link { color: var(--link-color); font-size: 0.85em; text-decoration: none; }
 .loc-map-link:hover { text-decoration: underline; }
 .observation-current { background: var(--accent-bg, rgba(0,122,255,0.1)); font-weight: 600; }
 .detail-obs-row:hover { background: var(--hover-bg, rgba(255,255,255,0.05)); }
@@ -1449,7 +1487,7 @@ body.scroll-locked { overflow: hidden; }
   overflow: hidden;
   vertical-align: middle;
 }
-.path-hops .hop { color: var(--accent); line-height: 18px; }
+.path-hops .hop { color: var(--link-color); line-height: 18px; }
 /* #1668 M2 / operator-flagged chip: was `color:#fff; background:var(--accent)`
    = 2.75:1 on dark theme (BLOCKER). Now uses --accent-strong (#2563eb)
    with --text-on-accent (gray-50) for 4.83:1 — WCAG AA body pass in
@@ -1494,10 +1532,10 @@ body.scroll-locked { overflow: hidden; }
   resize: vertical; margin-bottom: 12px;
 }
 .modal .btn-primary {
-  background: var(--accent); color: #fff; border: none; padding: 8px 20px;
+  background: var(--accent-strong); color: var(--text-on-accent); border: none; padding: 8px 20px;
   border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600;
 }
-.modal .btn-primary:hover { background: var(--accent-hover); }
+.modal .btn-primary:hover { background: var(--palette-blue-700, #1d4ed8); }
 .modal .btn-close {
   background: none; border: 1px solid var(--border); padding: 8px 16px;
   border-radius: 6px; cursor: pointer; margin-left: 8px; font-size: 14px;
@@ -1742,7 +1780,7 @@ button.ch-item.selected { background: var(--selected-bg); }
 button.ch-item:hover .ch-icon-btn { opacity: 1; }
 .ch-icon-btn:hover, .ch-icon-btn:focus { opacity: 1 !important; outline: none; }
 .ch-remove-btn:hover, .ch-remove-btn:focus { background: #8b3838; color: white; }
-.ch-share-btn:hover,  .ch-share-btn:focus  { color: var(--accent, #3b82f6); }
+.ch-share-btn:hover,  .ch-share-btn:focus  { color: var(--link-color, #3b82f6); }
 .ch-user-badge { font-size: 12px; font-weight: var(--fw-medium); margin-left: 2px; opacity: 0.85; flex-shrink: 0; } /* #1668 M3 r1 — chip floor, mirror row chips (adv #2) */
 .ch-item-preview { font-size: 13px; font-weight: var(--fw-medium); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* #1668 M3 — was 12px/400 */
 
@@ -1788,10 +1826,10 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
   font-size: 14px; line-height: 1.5; word-break: break-word; display: inline-block; max-width: 100%;
   border: 1px solid var(--border);
 }
-.ch-mention { color: var(--accent); font-weight: 600; }
+.ch-mention { color: var(--link-color); font-weight: 600; }
 .ch-encrypted-text { font-size: 11px; color: var(--text-muted); }
 .ch-msg-meta { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
-.ch-analyze-link { color: var(--accent); text-decoration: none; margin-left: 8px; }
+.ch-analyze-link { color: var(--link-color); text-decoration: none; margin-left: 8px; }
 .ch-analyze-link:hover { text-decoration: underline; }
 .ch-scroll-btn {
   position: absolute; bottom: 16px; right: 24px; background: var(--accent); color: #fff;
@@ -1842,7 +1880,7 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
 .ch-node-label { display: block; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .3px; margin-bottom: 2px; }
 .ch-node-adverts { margin-top: 12px; }
 .ch-node-advert { font-size: 12px; color: var(--text-muted); padding: 4px 0; border-bottom: 1px solid var(--border); }
-.ch-node-link { display: inline-block; margin-top: 12px; color: var(--accent); text-decoration: none; font-size: 13px; }
+.ch-node-link { display: inline-block; margin-top: 12px; color: var(--link-color); text-decoration: none; font-size: 13px; }
 .ch-node-link:hover { text-decoration: underline; }
 
 /* === Nodes Page === */
@@ -1945,7 +1983,7 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
 }
 /* #829: explicit color so text stays readable when inherited color matches card-bg */
 .advert-info { font-size: 12px; line-height: 1.5; color: var(--text); }
-.advert-info a { color: var(--accent); }
+.advert-info a { color: var(--link-color); }
 
 /* === Traces Page === */
 .traces-page { padding: 16px; max-width: var(--trace-max-width, 95vw); margin: 0 auto; }
@@ -2080,7 +2118,7 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
   border-bottom: 1px solid var(--border); transition: background .1s;
 }
 .search-result-item:hover { background: var(--row-hover); }
-.search-result-type { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--accent); margin-right: 8px; }
+.search-result-type { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--link-color); margin-right: 8px; }
 .search-no-results { padding: 20px; text-align: center; color: var(--text-muted); font-size: 14px; }
 
 /* === Loading States & Transitions (M16) === */
@@ -2117,8 +2155,8 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
 .data-table tbody tr.new-row { animation: row-flash 800ms ease-out; }
 
 .data-table th.sortable { cursor: pointer; user-select: none; }
-.data-table th.sortable:hover { color: var(--accent); }
-.data-table th.sort-active { color: var(--accent); }
+.data-table th.sortable:hover { color: var(--link-color); }
+.data-table th.sort-active { color: var(--link-color); }
 .data-table th .sort-arrow { font-size: 10px; margin-left: 4px; opacity: 0.7; }
 .data-table tbody tr { border-left: 3px solid transparent; transition: border-color 0.15s, background 0.15s; }
 .data-table tbody tr:hover { border-left-color: var(--accent); }
@@ -2416,7 +2454,7 @@ button.ch-item:hover .ch-icon-btn { opacity: 1; }
 
 /* === Grouped Packet Rows === */
 .group-header { cursor: pointer; font-weight: 600; }
-.group-header td:first-child::before { content: '▶ '; font-size: 10px; color: var(--accent); transition: transform 0.15s; display: inline-block; }
+.group-header td:first-child::before { content: '▶ '; font-size: 10px; color: var(--link-color); transition: transform 0.15s; display: inline-block; }
 .group-header.expanded td:first-child::before { content: '▼ '; }
 .group-header:hover { background: var(--row-hover); }
 .group-child { font-size: 12px; }
@@ -2563,7 +2601,7 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
 .ch-key-input:focus {
   outline: 2px solid var(--accent, #3b82f6);
   outline-offset: -1px;
-  border-color: var(--accent, #3b82f6);
+  border-color: var(--link-color, #3b82f6);
 }
 .ch-key-input::placeholder { color: var(--text-muted); }
 .ch-key-input-wrap { margin-bottom: 4px; }
@@ -2595,7 +2633,7 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
   border-radius: 6px;
   flex: 0 0 auto;
 }
-.ch-analytics-link:hover { color: var(--accent); }
+.ch-analytics-link:hover { color: var(--link-color); }
 .ch-add-status--loading { color: var(--text-muted); }
 .ch-add-status--success { color: var(--success, #22c55e); }
 .ch-add-status--warn { color: var(--warning, #eab308); }
@@ -2667,8 +2705,8 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
 .analytics-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .analytics-table th { text-align: left; padding: 8px; border-bottom: 2px solid var(--border); font-size: 12px; text-transform: uppercase; color: var(--text-muted); }
 .analytics-table th.sortable { cursor: pointer; user-select: none; }
-.analytics-table th.sortable:hover { color: var(--accent); }
-.analytics-table th.sort-active { color: var(--accent); }
+.analytics-table th.sortable:hover { color: var(--link-color); }
+.analytics-table th.sort-active { color: var(--link-color); }
 .analytics-table th .sort-arrow { font-size: 10px; margin-left: 4px; opacity: 0.7; }
 .analytics-table td { padding: 8px; border-bottom: 1px solid var(--border); }
 .analytics-table .ch-section-row { background: var(--card-bg); }
@@ -2732,19 +2770,23 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
   border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.25); padding: 8px 12px;
   font-size: 12px; min-width: 160px; max-width: 260px; pointer-events: none;
 }
-.hash-matrix-tooltip-hex { font-family: var(--mono); font-size: 13px; font-weight: 700; margin-bottom: 4px; color: var(--accent); }
+.hash-matrix-tooltip-hex { font-family: var(--mono); font-size: 13px; font-weight: 700; margin-bottom: 4px; color: var(--link-color); }
 .hash-matrix-tooltip-status { color: var(--text-muted); font-size: 11px; }
 .hash-matrix-tooltip-nodes { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
 .hash-byte-selector { display: flex; gap: 4px; }
 .hash-byte-btn { padding: 4px 12px; border-radius: 20px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; transition: background .15s, color .15s; }
 .hash-byte-btn:hover { background: var(--border); color: var(--text); }
-.hash-byte-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hash-byte-btn.active { background: var(--accent-strong); color: var(--text-on-accent); border-color: var(--accent-strong); }
 .hash-bar-value { min-width: 120px; text-align: right; font-size: 13px; font-weight: 600; }
-.badge-hash-1 { background: #ef444420; color: var(--status-red); }
-.badge-hash-2 { background: #22c55e20; color: var(--status-green); }
-.badge-success { background: #22c55e20; color: var(--status-green); }
-.badge-danger { background: #ef444420; color: var(--status-red); }
-.badge-hash-3 { background: #3b82f620; color: var(--accent); }
+/* #1668 M5 — was translucent-fg-on-tinted-bg (e.g. #ef4444 on #ef444420
+   stacked over surface ≈ 2-4:1, BLOCKER). Solid -700 hue with white text
+   preserves semantic encoding (red/green/blue) AND clears AA both themes:
+   #fff/#b91c1c=6.47, #fff/#15803d=5.02, #fff/#1d4ed8=6.70. */
+.badge-hash-1 { background: var(--palette-red-700, #b91c1c); color: var(--palette-gray-50, #f9fafb); }
+.badge-hash-2 { background: var(--palette-green-700, #15803d); color: var(--palette-gray-50, #f9fafb); }
+.badge-success { background: var(--palette-green-700, #15803d); color: var(--palette-gray-50, #f9fafb); }
+.badge-danger { background: var(--palette-red-700, #b91c1c); color: var(--palette-gray-50, #f9fafb); }
+.badge-hash-3 { background: var(--palette-blue-700, #1d4ed8); color: var(--palette-gray-50, #f9fafb); }
 .timeline-legend { display: flex; gap: 16px; justify-content: center; margin-top: 8px; font-size: 12px; }
 .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .timeline-chart svg { display: block; }
@@ -2755,7 +2797,7 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
 }
 .clickable-row { cursor: pointer; }
 .clickable-row:hover { background: var(--hover-bg, rgba(0,0,0,.04)); }
-.analytics-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+.analytics-link { color: var(--link-color); text-decoration: none; font-weight: 600; }
 .analytics-link:hover { text-decoration: underline; }
 
 /* Analytics v2 */
@@ -2866,7 +2908,7 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
 
 /* Clickable hop links */
 .hop-link {
-  color: var(--accent, #3b82f6);
+  color: var(--link-color, #3b82f6);
   text-decoration: none;
   cursor: pointer;
   transition: color 0.15s;
@@ -2928,11 +2970,16 @@ button.ch-item.ch-item-encrypted .ch-badge { filter: grayscale(0.6); }
 .hop-conflict-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hop-conflict-dist { font-size: 11px; color: var(--text-muted); font-family: var(--mono); white-space: nowrap; }
 .hop-conflict-pk { font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
-.hop-unreliable { opacity: 0.85; }
+/* #1668 M5 — was opacity:0.85; dropped fg #f9fafb on accent-strong
+   #2563eb to 4.45:1 (BLOCKER). The adjacent .hop-unreliable-btn (status
+   yellow warning glyph) is the redundant non-color signal that this hop
+   is dubious — opacity haze was over-encoding it. Remove the haze; the
+   warning icon stays as the visual marker. */
+.hop-unreliable { font-style: italic; }
 .hop-unreliable-btn { background: none; border: none; color: var(--status-yellow, #f59e0b); font-size: 13px;
   cursor: help; vertical-align: middle; margin-left: 2px; padding: 0 2px; line-height: 1; }
 .hop-global-fallback { border-bottom: 1px dashed var(--status-red); }
-.hop-current { font-weight: 700 !important; color: var(--accent) !important; }
+.hop-current { font-weight: 700 !important; color: var(--link-color) !important; }
 
 /* Self-loop subpath rows */
 .subpath-selfloop { opacity: 0.6; }
@@ -3300,10 +3347,13 @@ tr[data-hops]:hover { background: rgba(59,130,246,0.1); }
   flex-shrink: 0;
 }
 .region-pill:hover { border-color: var(--accent); color: var(--accent); }
+/* #1668 M5 — was bg:var(--accent)(#4a9eff) + #fff = 2.75:1 BLOCKER on both themes.
+   Bumped to --accent-strong (#2563eb) + --text-on-accent for 4.83:1 AA pass.
+   Same M2 token pair used for .skip-link / .hop-named / .filter-bar .btn.active. */
 button.region-pill-active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-strong); color: var(--text-on-accent); border-color: var(--accent-strong);
 }
-button.region-pill-active:hover { opacity: 0.85; color: #fff; }
+button.region-pill-active:hover { opacity: 0.85; color: var(--text-on-accent); }
 .region-filter-label {
   font-size: 12px; font-weight: 600; color: var(--text-muted); align-self: center;
   margin-right: 2px; user-select: none; white-space: nowrap; flex-shrink: 0;
@@ -3371,7 +3421,7 @@ button.region-pill-active:hover { opacity: 0.85; color: #fff; }
 }
 .multi-select-item:hover { background: var(--row-hover, #f5f5f5); }
 
-.chan-tag { background: var(--accent, #3b82f6); color: #fff; padding: 2px 8px; border-radius: 4px; font-size: 0.9em; font-weight: 600; }
+.chan-tag { background: var(--accent-strong, #2563eb); color: var(--text-on-accent, #f9fafb); padding: 2px 8px; border-radius: 4px; font-size: 0.9em; font-weight: 600; }
 
 /* Matrix mode hex animation */
 .matrix-char { background: none !important; border: none !important; }
@@ -3626,7 +3676,7 @@ button.region-pill-active:hover { opacity: 0.85; color: #fff; }
   color: var(--text-muted);
   margin: 0 0 var(--space-md);
 }
-.compare-breadcrumbs a { color: var(--accent); text-decoration: none; }
+.compare-breadcrumbs a { color: var(--link-color); text-decoration: none; }
 .compare-breadcrumbs a:hover { text-decoration: underline; }
 
 .compare-controls {
@@ -3670,11 +3720,14 @@ button.region-pill-active:hover { opacity: 0.85; color: #fff; }
 }
 .compare-select:focus { border-color: var(--accent); outline: none; }
 .compare-vs {
-  font-size: 10px; font-weight: 700; color: var(--text-muted);
+  /* #1668 M5 — was font-size:10px+color:var(--text-muted)+opacity:0.7
+     → composite color #8c929b on white = 3.13:1 (BLOCKER). Removed the
+     opacity haze AND bumped from text-muted to text (full theme color)
+     so the 'vs' lives in the same readable band as adjacent labels. */
+  font-size: 10px; font-weight: 700; color: var(--text);
   text-transform: uppercase; letter-spacing: 1.2px;
   padding: 0 4px;
   align-self: center;
-  opacity: 0.7;
 }
 /* The Compare CTA was removed in #1646 — comparison auto-runs when
  * both observers are chosen. The legacy .compare-btn touch-target
@@ -4539,10 +4592,10 @@ body[data-cb-preset="achromat"] {
 
 /* === #1034 PR1: Channel Add modal + sectioned sidebar === */
 .ch-add-channel-btn {
-  background: var(--accent, #2563eb); color: #fff; border: none;
+  background: var(--accent-strong, #2563eb); color: var(--text-on-accent, #f9fafb); border: none;
   padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
 }
-.ch-add-channel-btn:hover { background: var(--accent-hover, #1d4ed8); }
+.ch-add-channel-btn:hover { background: var(--palette-blue-700, #1d4ed8); }
 
 .ch-modal-overlay { z-index: 1100; }
 .ch-modal-overlay.hidden { display: none; }

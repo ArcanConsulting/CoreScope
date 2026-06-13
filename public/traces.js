@@ -48,7 +48,7 @@
   function obsLink(t) {
     const label = escapeHtml(obsLabel(t));
     if (!t.observer) return label;
-    return `<a href="#/observers/${encodeURIComponent(t.observer)}" style="color:var(--accent);text-decoration:none;" title="${escapeHtml(t.observer)}">${label}</a>`;
+    return `<a href="#/observers/${encodeURIComponent(t.observer)}" style="color:var(--link-color);text-decoration:none;" title="${escapeHtml(t.observer)}">${label}</a>`;
   }
 
   async function doTrace() {
@@ -107,7 +107,7 @@
 
       renderResults(results, allPaths, allPathsRaw, decoded);
     } catch (e) {
-      results.innerHTML = `<div class="trace-empty" style="color:#ef4444">Error: ${e.message}</div>`;
+      results.innerHTML = `<div class="trace-empty" style="color:var(--danger)">Error: ${e.message}</div>`;
     }
   }
 

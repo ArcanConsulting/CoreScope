@@ -53,10 +53,10 @@
       .alab-btn { padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
         background: var(--surface-1); color: var(--text); cursor: pointer; font-size: 13px; }
       .alab-btn:hover { background: var(--hover-bg); }
-      .alab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .alab-btn.active { background: var(--accent-strong); color: var(--text-on-accent); border-color: var(--accent-strong); }
       .alab-speed { padding: 4px 8px; font-size: 12px; border-radius: 4px; border: 1px solid var(--border);
         background: var(--surface-1); color: var(--text-muted); cursor: pointer; }
-      .alab-speed.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .alab-speed.active { background: var(--accent-strong); color: var(--text-on-accent); border-color: var(--accent-strong); }
       .alab-section { background: var(--surface-1); border: 1px solid var(--border);
         border-radius: 8px; padding: 16px; margin-bottom: 16px; }
       .alab-section h3 { margin: 0 0 12px 0; font-size: 14px; color: var(--text-muted); font-weight: 600; }
@@ -86,7 +86,7 @@
       .map-why-inline { display: block; font-size: 10px; color: var(--text-muted); font-family: var(--mono); margin-top: 2px; }
       .alab-note-play { background: none; border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
         font-size: 10px; padding: 2px 6px; color: var(--text-muted); }
-      .alab-note-play:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .alab-note-play:hover { background: var(--accent-strong); color: var(--text-on-accent); border-color: var(--accent-strong); }
       .alab-note-clickable { cursor: pointer; }
       .alab-note-clickable:hover { background: var(--hover-bg); }
       .alab-empty { text-align: center; padding: 60px 20px; color: var(--text-muted); font-size: 15px; }
@@ -514,7 +514,7 @@
       let html = '';
       for (const [type, pkts] of Object.entries(data.buckets)) {
         const color = TYPE_COLORS[type] || TYPE_COLORS.UNKNOWN;
-        html += `<div class="alab-type-hdr" style="background:${color}22;color:${color}" data-type="${type}">
+        html += `<div class="alab-type-hdr" style="${(window.aaBadgeStyle && window.aaBadgeStyle(color)) || (`background:${color};color:#fff`)}" data-type="${type}">
           <span>${type}</span><span style="font-size:11px;opacity:0.7">${pkts.length}</span></div>`;
         html += `<div class="alab-type-list" data-type-list="${type}">`;
         pkts.forEach((p, i) => {
