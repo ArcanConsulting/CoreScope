@@ -41,6 +41,22 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	// /api/healthz never observes a torn state (e.g. done=true with
 	// processed<total).
 	bfTotal, bfProcessed, bfDone := fromPubkeyBackfillSnapshot()
+
+	// #1724: surface async migration progress so the warm-up banner can
+	// stay visible while a long-running backfill is still consuming the
+	// single writer. anyAsyncMigrationRunning intentionally drops to
+	// false on "failed" status — operator should see warm-up complete
+	// + alert, not an endless banner.
+	var asyncMigrations []AsyncMigrationInfo
+	if s.db != nil {
+		if infos, err := readAsyncMigrations(s.db.conn); err == nil {
+			asyncMigrations = infos
+		}
+	}
+	if asyncMigrations == nil {
+		asyncMigrations = []AsyncMigrationInfo{}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	resp := map[string]interface{}{
 		"ready":     true,
@@ -51,6 +67,8 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 			"processed": bfProcessed,
 			"done":      bfDone,
 		},
+		"async_migrations":         asyncMigrations,
+		"async_migrations_running": anyAsyncMigrationRunning(asyncMigrations),
 	}
 	// PR #1609 M1: surface per-MQTT-source receipt vs write-path
 	// liveness so operators can distinguish "broker alive, write

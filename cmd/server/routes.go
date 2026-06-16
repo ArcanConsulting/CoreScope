@@ -230,6 +230,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/api/perf/io", s.handlePerfIO).Methods("GET")
 	r.HandleFunc("/api/perf/sqlite", s.handlePerfSqlite).Methods("GET")
 	r.HandleFunc("/api/perf/write-sources", s.handlePerfWriteSources).Methods("GET")
+	r.HandleFunc("/api/perf/async-migrations", s.handlePerfAsyncMigrations).Methods("GET")
 	r.HandleFunc("/api/mqtt/status", s.handleMqttStatus).Methods("GET")
 	r.Handle("/api/perf/reset", s.requireAPIKey(http.HandlerFunc(s.handlePerfReset))).Methods("POST")
 	// /api/admin/prune removed in #1283 — pruning is owned by the
@@ -913,6 +914,16 @@ func (s *Server) handlePerf(w http.ResponseWriter, r *http.Request) {
 		Cache:         perfCS,
 		PacketStore:   pktStoreStats,
 		Sqlite:        sqliteStats,
+		AsyncMigrations: func() []AsyncMigrationInfo {
+			if s.db == nil {
+				return []AsyncMigrationInfo{}
+			}
+			infos, err := readAsyncMigrations(s.db.conn)
+			if err != nil || infos == nil {
+				return []AsyncMigrationInfo{}
+			}
+			return infos
+		}(),
 		GoRuntime: func() *GoRuntimeStats {
 			ms := s.getMemStats()
 			return &GoRuntimeStats{
