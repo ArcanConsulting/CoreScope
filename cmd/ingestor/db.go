@@ -176,10 +176,18 @@ func OpenStoreWithInterval(dbPath string, sampleIntervalSec int) (*Store, error)
 	if err := s.RunAsyncMigration(context.Background(), "tx_last_seen_backfill_v1",
 		func(ctx context.Context, d *sql.DB) error {
 			log.Println("[migration/async] Backfilling transmissions.last_seen (chunked, reader-yielding)...")
-			processed, total, err := chunkedTxLastSeenBackfill(ctx, d, 5000, 100*time.Millisecond, nil)
+			processed, total, err := chunkedTxLastSeenBackfill(ctx, d, 5000, 100*time.Millisecond,
+				func(p, t int64) {
+					_ = recordAsyncMigrationProgress(d, "tx_last_seen_backfill_v1", p, t)
+				})
 			if err != nil {
+				// Force-write whatever counts we have so the surfaced
+				// progress reflects the failure point, not stale data.
+				_ = recordAsyncMigrationProgressTerminal(d, "tx_last_seen_backfill_v1", processed, total)
 				return err
 			}
+			// Force-write the terminal stable counts past the rate limiter.
+			_ = recordAsyncMigrationProgressTerminal(d, "tx_last_seen_backfill_v1", processed, total)
 			log.Printf("[migration/async] transmissions.last_seen backfill complete: %d / %d rows", processed, total)
 			return nil
 		}); err != nil {
