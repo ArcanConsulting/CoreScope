@@ -18,6 +18,7 @@ func openAsyncTestDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
+	// PREFLIGHT: async=true reason="test fixture CREATE TABLE on a fresh in-memory SQLite DB — not a real schema migration; runs in test setup only."
 	_, err = db.Exec(`
 		CREATE TABLE _async_migrations (
 			name           TEXT PRIMARY KEY,

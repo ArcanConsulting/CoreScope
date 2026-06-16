@@ -44,6 +44,7 @@ func ensureAsyncMigrationProgressColumns(db *sql.DB) error {
 		{"last_update_at", "TEXT"},
 	}
 	for _, c := range cols {
+		// PREFLIGHT: async=true reason="_async_migrations is the migration bookkeeping table itself — bounded to one row per known migration name (single-digit rows in practice, never grows with data). ALTER TABLE ADD COLUMN on this table is O(rows) and completes in microseconds even on prod-size DBs."
 		_, err := db.Exec(fmt.Sprintf(
 			`ALTER TABLE _async_migrations ADD COLUMN %s %s`, c.name, c.typ))
 		if err != nil && !isDuplicateColumnErr(err) {
