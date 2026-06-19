@@ -36,6 +36,33 @@ type RepeaterRelayInfo struct {
 	TransportedScopes []string `json:"transportedScopes,omitempty"`
 }
 
+// maxTransportedScopes bounds the per-node TransportedScopes list so a
+// misbehaving sender flooding distinct scope_name values through a single
+// repeater cannot inflate the node JSON unboundedly (#1751 review follow-up).
+// Real region-scope counts are small; this is a defensive ceiling. When the
+// set exceeds the cap the lexicographically-first names are kept, so the
+// result stays deterministic.
+const maxTransportedScopes = 32
+
+// sortedCappedScopes converts a scope set into a sorted, length-capped slice,
+// or nil when the set is empty/nil — so routes.go omits the JSON field via
+// `omitempty`. Shared by the bulk (computeRepeaterRelayInfoMap) and per-node
+// (computeRelayInfoFromEntries) paths to keep them in exact parity.
+func sortedCappedScopes(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	scopes := make([]string, 0, len(set))
+	for s := range set {
+		scopes = append(scopes, s)
+	}
+	sort.Strings(scopes)
+	if len(scopes) > maxTransportedScopes {
+		scopes = scopes[:maxTransportedScopes]
+	}
+	return scopes
+}
+
 // payloadTypeAdvert is the MeshCore payload type for ADVERT packets.
 // See firmware/src/Mesh.h. Adverts are NOT considered relay activity:
 // a repeater that only sends adverts proves it is alive, not that it
@@ -166,15 +193,8 @@ func computeRelayInfoFromEntries(entries []relayEntry, windowHours float64) Repe
 		}
 	}
 	// #1751: emit transported scopes regardless of whether any timestamp
-	// parsed — so set both before the latestRaw early-return below.
-	if len(scopeSet) > 0 {
-		scopes := make([]string, 0, len(scopeSet))
-		for s := range scopeSet {
-			scopes = append(scopes, s)
-		}
-		sort.Strings(scopes)
-		info.TransportedScopes = scopes
-	}
+	// parsed, and before the latestRaw early-return below.
+	info.TransportedScopes = sortedCappedScopes(scopeSet)
 	if latestRaw == "" {
 		return info
 	}

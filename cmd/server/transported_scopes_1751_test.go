@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func scopeTx(id int, payloadType int, scope string) *StoreTx {
 	pt := payloadType
 	return &StoreTx{
 		ID:          id,
-		Hash:        "scope-tx-" + scope + "-" + time.Duration(id).String(),
+		Hash:        "scope-tx-" + scope + "-" + strconv.Itoa(id),
 		PayloadType: &pt,
 		ScopeName:   scope,
 		FirstSeen:   time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339Nano),
@@ -95,5 +97,51 @@ func TestTransportedScopes_EmptyWhenNoScope(t *testing.T) {
 	}
 	if got := store.GetRepeaterRelayInfo(scope1751Key, 24).TransportedScopes; len(got) != 0 {
 		t.Fatalf("per-node: expected no scopes when ScopeName empty, got %v", got)
+	}
+}
+
+// TestTransportedScopes_CrossBucketFold covers the bulk path's prefix fold:
+// for a full-pubkey key it also folds in the matching 1-byte raw-prefix bucket
+// (deduping by tx.ID). A scope seen only in the prefix bucket must surface on
+// the full key, and a tx present in BOTH buckets must not be double-processed.
+func TestTransportedScopes_CrossBucketFold(t *testing.T) {
+	full := scopeTx(1, 2, "region-direct")           // only in the full-key bucket
+	prefixOnly := scopeTx(2, 2, "region-via-prefix") // only in the 1-byte bucket
+	shared := scopeTx(3, 2, "region-shared")         // in BOTH buckets (dedup by ID)
+
+	store := &PacketStore{
+		byPathHop: map[string][]*StoreTx{
+			scope1751Key:     {full, shared},
+			scope1751Key[:2]: {prefixOnly, shared},
+		},
+		mu: sync.RWMutex{},
+	}
+
+	got := store.computeRepeaterRelayInfoMap(24)[scope1751Key].TransportedScopes
+	want := []string{"region-direct", "region-shared", "region-via-prefix"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cross-bucket fold TransportedScopes = %v, want %v", got, want)
+	}
+}
+
+// TestTransportedScopes_Capped pins the soft cap (#1751 review follow-up):
+// more distinct scopes than maxTransportedScopes are bounded to the cap,
+// keeping the lexicographically-first names so the output stays deterministic.
+func TestTransportedScopes_Capped(t *testing.T) {
+	var txs []*StoreTx
+	for i := 0; i < maxTransportedScopes+10; i++ {
+		txs = append(txs, scopeTx(i+1, 2, fmt.Sprintf("scope-%03d", i)))
+	}
+	store := &PacketStore{
+		byPathHop: map[string][]*StoreTx{scope1751Key: txs},
+		mu:        sync.RWMutex{},
+	}
+
+	got := store.computeRepeaterRelayInfoMap(24)[scope1751Key].TransportedScopes
+	if len(got) != maxTransportedScopes {
+		t.Fatalf("expected cap at %d scopes, got %d", maxTransportedScopes, len(got))
+	}
+	if got[0] != "scope-000" || got[len(got)-1] != fmt.Sprintf("scope-%03d", maxTransportedScopes-1) {
+		t.Fatalf("cap should keep lexicographically-first names: first=%q last=%q", got[0], got[len(got)-1])
 	}
 }
