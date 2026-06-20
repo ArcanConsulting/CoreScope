@@ -2511,8 +2511,11 @@ function destroy() { _stopRolesRefresh(); _stopScopesRefresh(); _analyticsData =
     }
 
     _ngState = createGraphState(graphData);
-    renderNGStats(_ngState);
-    startGraphRenderer();
+    // Render through the filter path so the first paint already respects the
+    // default filters (observers unchecked, saved min-score) and the
+    // node-count guard is evaluated against the displayed set, not the full
+    // fetched graph.
+    applyNGFilters();
 
     // Filter listeners
     // Restore saved min score from localStorage
@@ -2587,6 +2590,9 @@ function destroy() { _stopRolesRefresh(); _stopScopesRefresh(); _analyticsData =
 
     _ngState.cooling = 1.0;
     renderNGStats(_ngState);
+    // Re-evaluate the node-count guard against the new filtered set and
+    // (re)start or stop the force-simulation loop accordingly.
+    startGraphRenderer();
   }
 
   function renderNGStats(st) {
@@ -2650,22 +2656,36 @@ function destroy() { _stopRolesRefresh(); _stopScopesRefresh(); _analyticsData =
   function startGraphRenderer() {
     if (!_ngState) return;
 
-    // Node count guard: skip force simulation for very large graphs
-    var NODE_LIMIT = 1000;
-    if (_ngState.allNodes.length > NODE_LIMIT) {
-      var el = document.getElementById('ngCanvas');
-      if (el) {
-        el.style.display = 'none';
-        var msg = document.createElement('div');
-        msg.className = 'analytics-card';
-        msg.innerHTML = '<p class="text-muted">Graph has ' + _ngState.allNodes.length + ' nodes (limit: ' + NODE_LIMIT + '). Force simulation skipped for performance. Use filters to reduce the node count.</p>';
-        el.parentNode.insertBefore(msg, el);
-      }
-      return;
+    // Re-entrant: the filter path calls this to restart against the new node
+    // set, so cancel any loop already running before deciding what to do.
+    if (_ngState.animId) {
+      cancelAnimationFrame(_ngState.animId);
+      _ngState.animId = null;
     }
 
     const canvas = document.getElementById('ngCanvas');
     if (!canvas) return;
+    var skipMsg = document.getElementById('ngSkipMsg');
+
+    // Node count guard: skip the force simulation for graphs too large to
+    // render usefully. Keyed off the DISPLAYED (filtered) set — _ngState.nodes
+    // — NOT the full fetched graph (_ngState.allNodes), so narrowing the
+    // filters re-enables rendering. The "skipped" notice has a stable id so
+    // it can be toggled on the next call.
+    var NODE_LIMIT = 1000;
+    if (_ngState.nodes.length > NODE_LIMIT) {
+      canvas.style.display = 'none';
+      if (!skipMsg) {
+        skipMsg = document.createElement('div');
+        skipMsg.id = 'ngSkipMsg';
+        skipMsg.className = 'analytics-card';
+        canvas.parentNode.insertBefore(skipMsg, canvas);
+      }
+      skipMsg.innerHTML = '<p class="text-muted">Graph has ' + _ngState.nodes.length + ' nodes (limit: ' + NODE_LIMIT + '). Force simulation skipped for performance. Use the filters above to reduce the node count.</p>';
+      return;
+    }
+    if (skipMsg) skipMsg.remove();
+    canvas.style.display = '';
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     canvas.width = canvas.clientWidth * dpr;
