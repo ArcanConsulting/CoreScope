@@ -78,6 +78,7 @@ const ROUTES = [
   '/analytics?tab=clock-health',
   '/analytics?tab=scopes',
   '/analytics?tab=prefix-tool',
+  '/analytics?tab=my-repeaters',
   '/audio-lab',
 ];
 
