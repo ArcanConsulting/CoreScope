@@ -88,6 +88,14 @@ func TestDistanceConcurrentRequestsDuringBuildReturn202(t *testing.T) {
 	if err := store.Load(); err != nil {
 		t.Fatalf("Load(): %v", err)
 	}
+	// Hold the lazy build open until every concurrent request has been served,
+	// so the "requests during the build window -> 202" guarantee is exercised
+	// deterministically. Without this the build of the tiny test DB finishes
+	// almost instantly, so on a fast/idle machine some requests race past it and
+	// get 200 — a flake, not a regression (the code only ever promised 202 for
+	// requests that arrive WHILE the build is in flight).
+	release := make(chan struct{})
+	store.distanceBuildHook = func() { <-release }
 	srv.store = store
 	r := mux.NewRouter()
 	srv.RegisterRoutes(r)
@@ -108,6 +116,7 @@ func TestDistanceConcurrentRequestsDuringBuildReturn202(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	close(release) // let the gated build finish
 	if got202.Load() != N {
 		t.Fatalf("expected all %d concurrent first-window requests to get 202; only %d did", N, got202.Load())
 	}

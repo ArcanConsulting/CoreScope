@@ -287,6 +287,11 @@ type PacketStore struct {
 	distLazyBuilding  bool
 	distLazyLastBuilt time.Time
 	distLazyLastObs   int // totalObs at last build, for Δobs debounce
+	// distanceBuildHook, if non-nil, runs at the start of the lazy build
+	// goroutine (after distLazyBuilding is set, before any lock is held). Tests
+	// use it to hold the build open so concurrent requests deterministically
+	// observe the "building" window; nil (and zero overhead) in production.
+	distanceBuildHook func()
 
 	// Cached GetNodeHashSizeInfo result — recomputed at most once every 15s
 	hashSizeInfoMu    sync.Mutex
@@ -4277,6 +4282,10 @@ func (s *PacketStore) TriggerDistanceIndexBuild() {
 		s.distLazyMu.Lock()
 		s.distLazyBuilding = true
 		s.distLazyMu.Unlock()
+
+		if s.distanceBuildHook != nil {
+			s.distanceBuildHook() // test seam: hold the build window open
+		}
 
 		s.mu.Lock()
 		s.buildDistanceIndex()
