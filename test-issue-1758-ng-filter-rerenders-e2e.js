@@ -91,10 +91,17 @@ function buildFixture() {
     });
   });
 
-  // Go to analytics and open the Neighbor Graph tab.
-  await page.goto(BASE + '/#/analytics', { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-tab="neighbor-graph"]', { timeout: 15000 });
-  await page.click('[data-tab="neighbor-graph"]');
+  // Deep-link straight to the Neighbor Graph tab instead of clicking it.
+  // loadAnalytics() awaits a Promise.all() of the OTHER analytics endpoints and
+  // only THEN calls renderTab(_currentTab). A tab click that lands before that
+  // resolves makes renderNeighborGraphTab() run twice: the second pass (fired by
+  // loadAnalytics when its fetches finally settle — slow during server warmup)
+  // rebuilds the role checkboxes (all re-checked) and a fresh _ngState from the
+  // full graph, flipping the >1000-node skip guard back on mid-test and racing
+  // our filter changes. Deep-linking renders the tab exactly once, as part of
+  // loadAnalytics itself, so #ngSkipMsg appears only when the page is quiescent
+  // and no late re-render can clobber the filter state we assert on.
+  await page.goto(BASE + '/#/analytics?tab=neighbor-graph', { waitUntil: 'domcontentloaded' });
   // The renderer is async (awaits the API). Wait for the role checkboxes —
   // they exist once the tab markup is painted.
   await page.waitForSelector('#ngRoleChecks input[data-role="companion"]', { timeout: 15000 });
