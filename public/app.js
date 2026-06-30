@@ -1625,7 +1625,15 @@ window.addEventListener('DOMContentLoaded', () => {
           + '</a>';
       }
     }));
-    favDropdown.innerHTML = items.join('');
+    // Footer action, separated from the favorites list by a top border. It is
+    // deliberately not a favorite row (no star), so it carries no data-key the
+    // star handler would act on.
+    favDropdown.innerHTML = items.join('')
+      + '<a href="#/analytics?tab=my-repeaters" class="fav-dd-item" style="border-top:1px solid var(--border)">'
+      + '<span class="fav-dd-status"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-chart-line"/></svg></span>'
+      + '<span class="fav-dd-name">Monitor my repeaters</span>'
+      + '<span class="fav-dd-meta"></span>'
+      + '</a>';
     bindFavStars(favDropdown, () => renderFavDropdown());
     // Close dropdown on link click
     favDropdown.querySelectorAll('.fav-dd-item').forEach(a => {

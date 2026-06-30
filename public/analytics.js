@@ -120,6 +120,7 @@
             <button class="tab-btn" data-tab="collisions">Hash Issues</button>
             <button class="tab-btn" data-tab="subpaths">Route Patterns</button>
             <button class="tab-btn" data-tab="nodes">Nodes</button>
+            <button class="tab-btn" data-tab="my-repeaters">My Repeaters</button>
             <button class="tab-btn" data-tab="distance">Distance</button>
             <button class="tab-btn" data-tab="neighbor-graph">Neighbor Graph</button>
             <button class="tab-btn" data-tab="rf-health">RF Health</button>
@@ -138,7 +139,7 @@
       </div>`;
 
     // Tabs where the area filter is meaningful (transmitter GPS attribution)
-    const AREA_FILTER_TABS = new Set(['overview', 'rf', 'topology', 'hashsizes', 'collisions', 'nodes', 'clock-health']);
+    const AREA_FILTER_TABS = new Set(['overview', 'rf', 'topology', 'hashsizes', 'collisions', 'nodes', 'my-repeaters', 'clock-health']);
 
     function setAreaFilterVisibility(tab) {
       const el = document.getElementById('analyticsAreaFilter');
@@ -284,6 +285,7 @@
       case 'collisions': await renderCollisionTab(el, d.hashData, d.collisionData); break;
       case 'subpaths': await renderSubpaths(el); break;
       case 'nodes': await renderNodesTab(el); break;
+      case 'my-repeaters': await renderMyRepeatersTab(el); break;
       case 'distance': await renderDistanceTab(el); break;
       case 'neighbor-graph': await renderNeighborGraphTab(el); break;
       case 'rf-health': await renderRFHealthTab(el); break;
@@ -2375,6 +2377,222 @@
       el.innerHTML = `<div style="padding:40px;text-align:center;color:#ff6b6b">Failed to load node analytics: ${esc(e.message)}</div>`;
     }
   }
+
+  // ===================== MY REPEATERS (favorites monitoring dashboard) =====================
+  // An at-a-glance monitor over the repeaters the operator has starred
+  // (meshcore-favorites). Pure frontend aggregation over existing endpoints:
+  //   /api/nodes                      relay activity + traffic/bridge scores
+  //   /api/nodes/clock-skew           per-node "is the clock OK" severity
+  //   /api/analytics/neighbor-graph   affinity edges, filtered to favorites
+  //                                   ("throughput between my repeaters")
+  function _mrSummaryCard(value, label, color) {
+    return `<div class="analytics-stat-card" style="flex:1;min-width:110px;text-align:center;padding:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:8px">
+      <div style="font-size:26px;font-weight:700${color ? ';color:' + color : ''}">${esc(String(value))}</div>
+      <div style="font-size:11px;text-transform:uppercase;color:var(--text-muted)">${esc(label)}</div>
+    </div>`;
+  }
+
+  // Status is carried by colour AND text — never colour alone — so it is
+  // legible to color-blind users and screen readers.
+  const MR_STATUS_META = {
+    active: { color: 'var(--status-green)', label: 'Active' },
+    degraded: { color: 'var(--status-yellow)', label: 'Degraded' },
+    silent: { color: 'var(--status-red)', label: 'Silent' },
+    unknown: { color: 'var(--text-muted)', label: 'Unknown' },
+  };
+  function _mrStatusCell(status) {
+    // Fall back to an explicit "Unknown" rather than silently mislabelling an
+    // unexpected status as "Silent".
+    const m = MR_STATUS_META[status] || MR_STATUS_META.unknown;
+    return `<span style="display:inline-flex;gap:5px;align-items:center;white-space:nowrap"><span style="color:${m.color}" aria-hidden="true"><svg class="ph-icon"><use href="/icons/phosphor-sprite.svg#ph-circle-fill"/></svg></span><span style="font-size:11px">${m.label}</span></span>`;
+  }
+
+  function _mrEmptyState() {
+    return `
+      <div class="analytics-section" style="text-align:center;padding:48px 24px;color:var(--text-muted)">
+        <svg class="ph-icon" aria-hidden="true" style="width:40px;height:40px;opacity:0.6"><use href="/icons/phosphor-sprite.svg#ph-star"/></svg>
+        <h3 style="margin:12px 0 6px">No favorite repeaters yet</h3>
+        <p>Star a repeater (the <svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-star"/></svg> on the <a href="#/nodes" class="analytics-link">Nodes</a> page or a node's detail) to add it to your watch-list. Starred repeaters show up here for at-a-glance monitoring.</p>
+      </div>`;
+  }
+
+  async function renderMyRepeatersTab(el) {
+    const haveFavs = () => (typeof getFavorites === 'function' ? getFavorites() : []);
+    if (!haveFavs().length) { el.innerHTML = _mrEmptyState(); return; }
+    el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-muted)">Loading your repeaters…</div>';
+    try {
+      const rq = RegionFilter.regionQueryString() + AreaFilter.areaQueryString();
+      // When a region/area filter is active the node fetch is scoped, so a
+      // starred repeater outside that scope won't come back. Surface that count
+      // instead of silently dropping it from the watch-list (#1761 MAJOR).
+      const filterActive = rq.length > 0;
+      // Fetch the three sources ONCE; star toggles re-paint from this cache
+      // (paint() below) instead of re-hitting the network. Trade-off: this
+      // pages the full node list (up to ~10k) to keep only the starred few —
+      // fine for a handful of favorites and amortized by CLIENT_TTL.nodeList
+      // across tabs. If favorite counts ever grow large, switch to per-node
+      // Promise.all(favs.map(pk => api('/nodes/' + pk))).
+      const [nodesResp, clockData, graphData] = await Promise.all([
+        fetchAllNodes('&sortBy=lastSeen' + rq, { ttl: CLIENT_TTL.nodeList }),
+        api('/nodes/clock-skew', { ttl: CLIENT_TTL.analyticsRF }).catch(() => []),
+        api('/analytics/neighbor-graph?min_count=1&min_score=0', { ttl: CLIENT_TTL.analyticsRF }).catch(() => ({ nodes: [], edges: [] })),
+      ]);
+      const allNodes = nodesResp.nodes || nodesResp;
+      const clockByPk = {};
+      (Array.isArray(clockData) ? clockData : []).forEach(c => { if (c && c.pubkey) clockByPk[c.pubkey] = c; });
+
+      const now = Date.now();
+      function ageOf(n) {
+        const ms = n.last_heard ? new Date(n.last_heard).getTime() : n.last_seen ? new Date(n.last_seen).getTime() : 0;
+        return ms ? now - ms : Infinity;
+      }
+      function statusOf(n) {
+        const th = (typeof getHealthThresholds === 'function') ? getHealthThresholds(n.role) : { degradedMs: 3600000, silentMs: 86400000 };
+        const age = ageOf(n);
+        return age < th.degradedMs ? 'active' : age < th.silentMs ? 'degraded' : 'silent';
+      }
+      const pct = v => (v != null ? (v * 100).toFixed(1) + '%' : '—');
+      // #1456: prefer traffic_share_score, fall back to usefulness_score.
+      const trafficOf = n => (n.traffic_share_score != null ? n.traffic_share_score : (n.usefulness_score != null ? n.usefulness_score : null));
+      function roleBadge(role) {
+        // Route the unknown-role fallback through ROLE_COLORS.unknown (backed by
+        // --mc-role-unknown / the shared Wong palette) instead of a hard-coded
+        // literal, so every swatch color flows through the CSS-variable system
+        // (#1761 nit). ROLE_COLORS always resolves .unknown.
+        const rc = window.ROLE_COLORS || {};
+        const c = rc[role] || rc.unknown || 'var(--role-unknown, #6b7280)';
+        const style = (window.aaBadgeStyle && window.aaBadgeStyle(c)) || ('background:' + c + ';color:#fff');
+        return `<span class="badge" style="${style}">${esc(role)}</span>`;
+      }
+
+      // Re-renders from the cached fetch using the LIVE favorites set, so an
+      // un-star drops the row with no refetch. Re-binds its stars after each
+      // paint (the innerHTML reset clears listeners).
+      function paint() {
+        const favs = new Set(haveFavs());
+        if (!favs.size) { el.innerHTML = _mrEmptyState(); return; }
+        const myNodes = allNodes.filter(n => favs.has(n.public_key) && (n.role === 'repeater' || n.role === 'room'));
+        const myKeys = new Set(myNodes.map(n => n.public_key));
+
+        // Favorites the scoped fetch didn't return — with a region/area filter
+        // active these are (most likely) outside the current scope. Surface the
+        // count so a hidden favorite isn't silently missing (#1761 MAJOR).
+        const allByPk = new Set(allNodes.map(n => n.public_key));
+        // Favorites absent from the scoped fetch: usually outside the active
+        // region/area filter, but the set also covers deleted/expired stars
+        // and role-filtered clients — so the notice stays causally neutral
+        // ("not shown with the active filter") rather than claiming a cause.
+        const hiddenByFilter = [...favs].filter(pk => !allByPk.has(pk)).length;
+        const filterNotice = (filterActive && hiddenByFilter > 0)
+          ? `<p class="text-muted" style="display:flex;gap:6px;align-items:center"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-funnel"/></svg>${hiddenByFilter} favorite${hiddenByFilter === 1 ? '' : 's'} not shown with the active region/area filter.</p>`
+          : '';
+
+        let active = 0, degraded = 0, silent = 0, clockOk = 0, totalRelay24 = 0;
+        myNodes.forEach(n => {
+          const s = statusOf(n); if (s === 'active') active++; else if (s === 'degraded') degraded++; else silent++;
+          const cs = clockByPk[n.public_key];
+          if (cs && cs.severity === 'ok') clockOk++;
+          totalRelay24 += (n.relay_count_24h || 0);
+        });
+
+        const rank = { silent: 0, degraded: 1, active: 2 };
+        const sorted = myNodes.slice().sort((a, b) => {
+          const d = rank[statusOf(a)] - rank[statusOf(b)];
+          return d !== 0 ? d : (a.name || '').localeCompare(b.name || '');
+        });
+
+        const rowsHtml = sorted.map(n => {
+          const cs = clockByPk[n.public_key];
+          const clockCell = cs ? renderSkewBadge(cs.severity, currentSkewValue(cs), cs) : '<span class="text-muted">—</span>';
+          const battery = n.battery_mv != null ? (n.battery_mv / 1000).toFixed(2) + ' V' : '—';
+          return `<tr>
+            <td>${favStar(n.public_key)}</td>
+            <td><a href="#/nodes/${encodeURIComponent(n.public_key)}/analytics" class="analytics-link">${esc(n.name || n.public_key.slice(0, 12))}</a></td>
+            <td>${roleBadge(n.role)}</td>
+            <td>${_mrStatusCell(statusOf(n))}</td>
+            <td>${clockCell}</td>
+            <td style="text-align:right">${pct(trafficOf(n))}</td>
+            <td style="text-align:right">${pct(n.bridge_score)}</td>
+            <td style="text-align:right">${n.relay_count_1h != null ? n.relay_count_1h : '—'}</td>
+            <td style="text-align:right">${n.relay_count_24h != null ? n.relay_count_24h : '—'}</td>
+            <td>${n.last_relayed ? timeAgo(n.last_relayed) : '—'}</td>
+            <td>${(n.last_heard || n.last_seen) ? timeAgo(n.last_heard || n.last_seen) : '—'}</td>
+            <td style="text-align:right">${battery}</td>
+          </tr>`;
+        }).join('');
+
+        const nameByPk = {};
+        myNodes.forEach(n => { nameByPk[n.public_key] = n.name || n.public_key.slice(0, 12); });
+        const myEdges = ((graphData && graphData.edges) || [])
+          .filter(e => myKeys.has(e.source) && myKeys.has(e.target))
+          .sort((a, b) => (b.score || 0) - (a.score || 0));
+        let affinityHtml;
+        if (!myEdges.length) {
+          affinityHtml = `<p class="text-muted" style="padding:8px 0">No affinity links detected between your repeaters yet — they may be too far apart, or not enough shared traffic has been observed.</p>`;
+        } else {
+          affinityHtml = `<table class="analytics-table">
+            <thead><tr><th scope="col">Link</th><th scope="col" style="text-align:right">Affinity</th><th scope="col" style="text-align:right">Packets</th><th scope="col" style="text-align:right">Avg SNR</th></tr></thead>
+            <tbody>${myEdges.map(e => {
+              // The affinity graph is undirected — the server marks every edge
+              // bidirectional — so the link glyph is always a double arrow.
+              const arrow = '&harr;';
+              const snr = (e.avg_snr != null) ? e.avg_snr.toFixed(1) + ' dB' : '—';
+              return `<tr>
+                <td>${esc(nameByPk[e.source] || e.source.slice(0, 12))} ${arrow} ${esc(nameByPk[e.target] || e.target.slice(0, 12))}${e.ambiguous ? ' <svg class="ph-icon" role="img" aria-label="Path attribution ambiguous"><title>Path attribution ambiguous</title><use href="/icons/phosphor-sprite.svg#ph-question"/></svg>' : ''}</td>
+                <td style="text-align:right">${pct(e.score)}</td>
+                <td style="text-align:right">${e.weight != null ? e.weight : '—'}</td>
+                <td style="text-align:right">${snr}</td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table>`;
+        }
+
+        el.innerHTML = `
+          <div class="analytics-section">
+            <h3><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-star-fill"/></svg> My Repeaters</h3>
+            <p class="text-muted">At-a-glance monitoring over the repeaters you have starred. Un-star a row to drop it from this list.</p>
+            ${filterNotice}
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:16px;margin-bottom:20px">
+              ${_mrSummaryCard(myNodes.length, 'My Repeaters')}
+              ${_mrSummaryCard(active, 'Active')}
+              ${_mrSummaryCard(degraded, 'Degraded')}
+              ${_mrSummaryCard(silent, 'Silent')}
+              ${_mrSummaryCard(clockOk + ' / ' + myNodes.length, 'Clock OK')}
+              ${_mrSummaryCard(totalRelay24.toLocaleString(), 'Relays (24h)')}
+            </div>
+
+            <table class="analytics-table" id="my-repeaters-table">
+              <thead><tr>
+                <th scope="col" aria-label="Favorite"></th>
+                <th scope="col">Repeater</th>
+                <th scope="col">Role</th>
+                <th scope="col">Status</th>
+                <th scope="col">Clock</th>
+                <th scope="col" style="text-align:right">Traffic</th>
+                <th scope="col" style="text-align:right">Bridge</th>
+                <th scope="col" style="text-align:right" title="Relays in the last hour">Relays 1h</th>
+                <th scope="col" style="text-align:right" title="Relays in the last 24 hours">Relays 24h</th>
+                <th scope="col">Last Relayed</th>
+                <th scope="col">Last Heard</th>
+                <th scope="col" style="text-align:right">Battery</th>
+              </tr></thead>
+              <tbody>${rowsHtml || '<tr><td colspan="12" class="text-muted">None of your favorites are repeaters/rooms in this view.</td></tr>'}</tbody>
+            </table>
+
+            <h3 style="margin-top:28px"><svg class="ph-icon" aria-hidden="true"><use href="/icons/phosphor-sprite.svg#ph-graph"/></svg> Links Between My Repeaters</h3>
+            <p class="text-muted">Affinity sub-graph filtered to your favorites — how much traffic flows directly between them.</p>
+            ${affinityHtml}
+          </div>`;
+
+        // Live un-star: re-paint from cache (no refetch) when a star toggles.
+        if (typeof bindFavStars === 'function') bindFavStars(el, paint);
+      }
+      paint();
+    } catch (e) {
+      el.innerHTML = `<div style="padding:40px;text-align:center;color:var(--status-red)">Failed to load your repeaters: ${esc(e.message)}</div>`;
+    }
+  }
+  // === MY REPEATERS BLOCK END (test harness slices the renderer block to here) ===
 
   async function renderDistanceTab(el) {
     try {
