@@ -2648,6 +2648,27 @@
     return _axisFromMax(axis, max);
   }
 
+  // Map /api/nodes rows to plottable points. Pure and factored out of
+  // renderRepeaterMetricsTab so the repeater/room filter and the fallback
+  // chains (traffic_share_score → usefulness_score → null; name → pubkey
+  // prefix → '?') are unit-testable (#1760 review).
+  function _toScatterPoints(nodes, favs) {
+    return nodes
+      .filter(n => n.role === 'repeater' || n.role === 'room')
+      .map(n => ({
+        pk: n.public_key,
+        name: n.name || (n.public_key ? n.public_key.slice(0, 12) : '?'),
+        role: n.role,
+        fav: favs.has(n.public_key),
+        // #1456: prefer traffic_share_score, fall back to usefulness_score.
+        traffic: n.traffic_share_score != null ? n.traffic_share_score : (n.usefulness_score != null ? n.usefulness_score : null),
+        bridge: n.bridge_score != null ? n.bridge_score : null,
+        relay1h: n.relay_count_1h != null ? n.relay_count_1h : null,
+        relay24h: n.relay_count_24h != null ? n.relay_count_24h : null,
+        adverts: n.advert_count != null ? n.advert_count : null,
+      }));
+  }
+
   function renderMetricScatter(points, xAxis, yAxis) {
     const w = 620, h = 380, pad = 60;
     const plotW = w - pad * 2, plotH = h - pad * 2;
@@ -2733,20 +2754,7 @@
       const resp = await fetchAllNodes('&sortBy=lastSeen' + rq, { ttl: CLIENT_TTL.nodeList });
       const nodes = resp.nodes || resp;
       const favs = new Set(typeof getFavorites === 'function' ? getFavorites() : []);
-      const points = nodes
-        .filter(n => n.role === 'repeater' || n.role === 'room')
-        .map(n => ({
-          pk: n.public_key,
-          name: n.name || (n.public_key ? n.public_key.slice(0, 12) : '?'),
-          role: n.role,
-          fav: favs.has(n.public_key),
-          // #1456: prefer traffic_share_score, fall back to usefulness_score.
-          traffic: n.traffic_share_score != null ? n.traffic_share_score : (n.usefulness_score != null ? n.usefulness_score : null),
-          bridge: n.bridge_score != null ? n.bridge_score : null,
-          relay1h: n.relay_count_1h != null ? n.relay_count_1h : null,
-          relay24h: n.relay_count_24h != null ? n.relay_count_24h : null,
-          adverts: n.advert_count != null ? n.advert_count : null,
-        }));
+      const points = _toScatterPoints(nodes, favs);
 
       if (!points.length) {
         el.innerHTML = `<div class="analytics-section">
@@ -2811,8 +2819,14 @@
         legendEl.innerHTML = lg;
       }
 
-      xSel.addEventListener('change', () => { try { localStorage.setItem('meshcore-repeater-scatter-x', xSel.value); } catch (e) { /* ignore */ } draw(); });
-      ySel.addEventListener('change', () => { try { localStorage.setItem('meshcore-repeater-scatter-y', ySel.value); } catch (e) { /* ignore */ } draw(); });
+      // One wiring body for both axes — a behaviour change can't miss one
+      // of the two listeners (#1760 review).
+      const wireAxis = (sel, storageKey) => sel.addEventListener('change', () => {
+        try { localStorage.setItem(storageKey, sel.value); } catch (e) { /* ignore */ }
+        draw();
+      });
+      wireAxis(xSel, 'meshcore-repeater-scatter-x');
+      wireAxis(ySel, 'meshcore-repeater-scatter-y');
       draw();
     } catch (e) {
       el.innerHTML = `<div style="padding:40px;text-align:center;color:#ff6b6b">Failed to load repeater metrics: ${esc(e.message)}</div>`;

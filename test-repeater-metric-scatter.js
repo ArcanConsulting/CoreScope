@@ -46,7 +46,7 @@ const esc = s => s ? String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').repl
 const statusYellow = () => '#eab308';
 const window = { ROLE_COLORS: { repeater: '#3b82f6', room: '#a855f7' } };
 const M = new Function('esc', 'statusYellow', 'window',
-  block + '\nreturn { REPEATER_METRIC_AXES, _niceCeil, _axisFmt, _resolveAxis, renderMetricScatter };')(esc, statusYellow, window);
+  block + '\nreturn { REPEATER_METRIC_AXES, _niceCeil, _axisFmt, _resolveAxis, _toScatterPoints, renderMetricScatter };')(esc, statusYellow, window);
 
 console.log('\n=== axis math (behavioral) ===');
 assert(M._niceCeil(0) === 1 && M._niceCeil(0.07) === 0.1 && M._niceCeil(37) === 50,
@@ -59,6 +59,34 @@ assert(M._axisFmt({ score: true }, 0.2) === '20%' && M._axisFmt({ score: true },
   '_axisFmt drops the trailing .0 on whole-percent gridlines');
 assert(M.REPEATER_METRIC_AXES.map(a => a.key).join(',') === 'traffic,bridge,relay1h,relay24h,adverts',
   'axis registry exposes the five repeater metrics');
+// Unknown/stale stored key (e.g. leftover localStorage) falls back to the
+// FIRST axis instead of throwing or returning undefined.
+const bogus = M._resolveAxis('bogus', [{ traffic: 0.4 }]);
+assert(bogus.key === 'traffic' && bogus.max > 0,
+  "_resolveAxis('bogus') falls back to the traffic axis with a real domain");
+
+console.log('\n=== node→point mapping (behavioral — _toScatterPoints) ===');
+const favSet = new Set(['FAV0000000000000']);
+const mapped = M._toScatterPoints([
+  { public_key: 'FAV0000000000000', name: 'Fav Rptr', role: 'repeater', traffic_share_score: 0.5, bridge_score: 0.2, relay_count_1h: 1, relay_count_24h: 2, advert_count: 3 },
+  { public_key: 'USEFULNESS000000', name: 'Old Server', role: 'room', usefulness_score: 0.07 },
+  { public_key: 'NOSCORES00000000', name: 'Bare', role: 'repeater' },
+  { public_key: 'NAMELESS00000000ABCDEF', role: 'repeater' },
+  { public_key: 'COMPANION0000000', name: 'Phone', role: 'companion', traffic_share_score: 0.9 },
+  { role: 'repeater' },
+], favSet);
+assert(mapped.length === 5 && !mapped.some(p => p.role === 'companion'),
+  'non-repeater/room roles are filtered out');
+assert(mapped[0].traffic === 0.5 && mapped[0].fav === true,
+  'traffic_share_score is preferred and favorites are flagged');
+assert(mapped[1].traffic === 0.07 && mapped[1].fav === false,
+  'missing traffic_share_score falls back to usefulness_score');
+assert(mapped[2].traffic === null && mapped[2].bridge === null && mapped[2].relay1h === null,
+  'rows without scores map to null (not 0/undefined) so plots can skip them');
+assert(mapped[3].name === 'NAMELESS0000',
+  'nameless node falls back to a 12-char pubkey prefix');
+assert(mapped[4].name === '?' && mapped[4].pk === undefined,
+  'node with neither name nor pubkey falls back to "?"');
 
 console.log('\n=== scatter render (behavioral — executes renderMetricScatter) ===');
 const pts = [
